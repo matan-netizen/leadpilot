@@ -74,7 +74,8 @@ class Settings:
     cron_secret: str | None
     digest_webhook_url: str | None
     timezone: str
-    model_provider: str  # "anthropic" | "fake"
+    model_provider: str  # "anthropic" | "offline" (no key: rule-based demo) | "fake" (tests)
+    business_name: str
     session_hours: int
     environment: str  # "local" | "staging" | "production"
 
@@ -88,16 +89,15 @@ class Settings:
 
 
 def load_settings() -> Settings:
-    provider = _env("MODEL_PROVIDER", "anthropic")
     api_key = _env("ANTHROPIC_API_KEY")
+    # No key → the app still runs: the dashboard is complete and the assistant uses the built-in rule engine.
+    provider = _env("MODEL_PROVIDER", "anthropic" if api_key else "offline")
     environment = _env("APP_ENV", "local")
     app_password = _env("APP_PASSWORD")
     app_secret = _env("APP_SECRET")
 
     if environment == "production":
         missing = [n for n, v in (("APP_PASSWORD", app_password), ("APP_SECRET", app_secret)) if not v]
-        if provider == "anthropic" and not api_key:
-            missing.append("ANTHROPIC_API_KEY")
         if missing:
             raise RuntimeError(f"Missing required variables in production: {', '.join(missing)}")
 
@@ -109,7 +109,7 @@ def load_settings() -> Settings:
         database_url = database_url.replace("postgresql://", "postgresql+psycopg://", 1)
 
     return Settings(
-        app_password=app_password or "bakery",
+        app_password=app_password or "leads",
         app_secret=app_secret or secrets.token_hex(32),
         database_url=database_url,
         anthropic_api_key=api_key,
@@ -126,6 +126,7 @@ def load_settings() -> Settings:
         model_provider=provider,
         session_hours=int(_env("SESSION_HOURS", "72")),
         environment=environment,
+        business_name=_env("BUSINESS_NAME", "סטודיו פיקסל – בניית אתרים ושיווק דיגיטלי"),
     )
 
 

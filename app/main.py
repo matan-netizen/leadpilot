@@ -1,4 +1,4 @@
-"""Bakery Copilot backend: the API, the static UI, the health check, the digest hook.
+"""LeadPilot backend: the leads API, the smart-reply endpoint, the agent chat, health and digest.
 
 One service does everything (architecture.md, "Where things run"). The agent
 loop itself lives in agent.py; this file is doors, locks and plumbing.
@@ -19,9 +19,11 @@ from sqlalchemy.orm import Session
 from . import auth, limits
 from .agent import get_model_client, run_turn
 from .config import ROOT, settings
-from .db import Conversation, Message, SessionLocal, engine, get_db, init_db
+from . import smart_reply
+from .db import Conversation, Lead, LeadEvent, Message, SessionLocal, engine, get_db, init_db, utcnow
+from .leads_meta import STATUS_BY_ID, compute_metrics, meta, normalize_phone
 from .digest import build_digest, send_digest
-from .tools.invoices import recent_invoices
+from .tools import leads as lead_tools
 
 
 @asynccontextmanager
@@ -33,7 +35,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Bakery Copilot", version="0.1.0", lifespan=lifespan, docs_url=None, redoc_url=None)
+app = FastAPI(title="LeadPilot", version="0.1.0", lifespan=lifespan, docs_url=None, redoc_url=None)
 app.mount("/static", StaticFiles(directory=str(ROOT / "static")), name="static")
 
 
@@ -49,6 +51,40 @@ class LoginIn(BaseModel):
 class ImageIn(BaseModel):
     media_type: str = Field(pattern=r"^image/(png|jpeg|webp|gif)$")
     data: str  # base64, no data: prefix
+
+
+class LeadIn(BaseModel):
+    phone: str = Field(min_length=7, max_length=40)
+    name: str = Field(default="", max_length=80)
+    source: str = Field(default="", max_length=30)
+    status: str | None = "sent_intro"
+    notes: str = Field(default="", max_length=4000)
+
+
+class LeadPatch(BaseModel):
+    name: str | None = Field(default=None, max_length=80)
+    phone: str | None = Field(default=None, max_length=40)
+    source: str | None = Field(default=None, max_length=30)
+    status: str | None = None
+    clear_status: bool = False
+    first_attempt: str | None = Field(default=None, max_length=4000)
+    second_attempt: str | None = Field(default=None, max_length=4000)
+    last_update: str | None = Field(default=None, max_length=4000)
+    notes: str | None = Field(default=None, max_length=4000)
+
+
+class IncomingIn(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+
+
+class SmartReplyIn(BaseModel):
+    incoming: str | None = Field(default=None, max_length=4000)
+    tone: str = Field(default="friendly", pattern=r"^(friendly|short|formal)$")
+
+
+class SentIn(BaseModel):
+    reply: str = Field(min_length=1, max_length=4000)
+    status: str | None = None
 
 
 class ChatIn(BaseModel):
@@ -74,8 +110,6 @@ def health(db: Session = Depends(get_db)):
         db.execute(text("SELECT 1"))
     except Exception as exc:  # pragma: no cover - exercised on a broken deploy, not in tests
         problems.append(f"db: {type(exc).__name__}")
-    if settings.model_provider == "anthropic" and not settings.anthropic_api_key:
-        problems.append("ANTHROPIC_API_KEY missing")
     body = {"status": "ok" if not problems else "degraded", "env": settings.environment, "model": settings.model,
             "provider": settings.model_provider, "db": "sqlite" if settings.is_sqlite else "postgres", "problems": problems,
             "time": datetime.now(timezone.utc).isoformat(timespec="seconds")}
@@ -91,7 +125,7 @@ def health(db: Session = Depends(get_db)):
 @app.post("/api/login")
 def login(payload: LoginIn, response: Response, db: Session = Depends(get_db)):
     if not auth.password_ok(payload.password):
-        raise HTTPException(401, "Wrong password.")
+        raise HTTPException(401, "סיסמה שגויה.")
     user = auth.get_or_create_user(db, auth.normalise_name(payload.name))
     response.set_cookie(auth.COOKIE_NAME, auth.make_token(user.id, user.name), httponly=True, samesite="lax",
                         secure=settings.is_production, max_age=settings.session_hours * 3600, path="/")
@@ -127,7 +161,7 @@ def list_messages(conversation_id: int, request: Request, db: Session = Depends(
     user = auth.current_user(request, db)
     conv = db.get(Conversation, conversation_id)
     if conv is None or conv.user_id != user.id:
-        raise HTTPException(404, "Conversation not found.")
+        raise HTTPException(404, "השיחה לא נמצאה.")
     rows = db.scalars(select(Message).where(Message.conversation_id == conv.id).order_by(Message.id)).all()
     return [{"id": m.id, "role": m.role, "content": m.content, "has_image": m.has_image,
              "created_at": m.created_at.isoformat(timespec="seconds")} for m in rows]
@@ -138,7 +172,7 @@ def chat(payload: ChatIn, request: Request, db: Session = Depends(get_db)):
     """One turn. Checks the three limits, then streams the agent's events as SSE."""
     user = auth.current_user(request, db)
     if not payload.message.strip() and payload.image is None:
-        raise HTTPException(400, "Say something or attach an invoice.")
+        raise HTTPException(400, "כתבו הודעה או צרפו צילום מסך.")
     limits.check_rate_limit(db, user.id)
     limits.check_daily_cap(db)
     limits.check_upload_size(payload.image.data if payload.image else None)
@@ -147,7 +181,7 @@ def chat(payload: ChatIn, request: Request, db: Session = Depends(get_db)):
     if payload.conversation_id is not None:
         conv = db.get(Conversation, payload.conversation_id)
         if conv is None or conv.user_id != user.id:
-            raise HTTPException(404, "Conversation not found.")
+            raise HTTPException(404, "השיחה לא נמצאה.")
     conv_id = conv.id if conv else None
     user_id = user.id
     image = payload.image.model_dump() if payload.image else None
@@ -166,13 +200,129 @@ def chat(payload: ChatIn, request: Request, db: Session = Depends(get_db)):
 
 
 # ---------------------------------------------------------------------------
-# Invoices, stats, digest
+# Leads
 # ---------------------------------------------------------------------------
 
-@app.get("/api/invoices")
-def invoices(request: Request, db: Session = Depends(get_db)):
+def _lead_or_404(db: Session, lead_id: int) -> Lead:
+    lead = db.get(Lead, lead_id)
+    if lead is None:
+        raise HTTPException(404, "הליד לא נמצא.")
+    return lead
+
+
+@app.get("/api/meta")
+def get_meta(request: Request, db: Session = Depends(get_db)):
     auth.current_user(request, db)
-    return recent_invoices(db, limit=50)
+    return {**meta(), "business": settings.business_name, "ai": request.app.state.model_client.name,
+            "model": settings.model if request.app.state.model_client.name == "anthropic" else None}
+
+
+@app.get("/api/leads")
+def get_leads(request: Request, db: Session = Depends(get_db)):
+    auth.current_user(request, db)
+    return {"leads": lead_tools.leads_payload(db), "synced_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+
+
+@app.get("/api/overview")
+def overview(request: Request, db: Session = Depends(get_db)):
+    auth.current_user(request, db)
+    return compute_metrics(lead_tools.all_leads(db), utcnow())
+
+
+@app.get("/api/leads/{lead_id}")
+def get_one_lead(lead_id: int, request: Request, db: Session = Depends(get_db)):
+    auth.current_user(request, db)
+    data = lead_tools.get_lead(db, lead_id=lead_id)
+    if "error" in data:
+        raise HTTPException(404, "הליד לא נמצא.")
+    return data
+
+
+@app.post("/api/leads", status_code=201)
+def new_lead(payload: LeadIn, request: Request, db: Session = Depends(get_db)):
+    user = auth.current_user(request, db)
+    res = lead_tools.create_lead(db, user_id=user.id, **payload.model_dump())
+    if "error" in res:
+        raise HTTPException(400, "מספר הטלפון לא תקין." if "phone" in res["error"] else res["error"])
+    if not res["created"]:
+        raise HTTPException(409, f"המספר כבר קיים במערכת (ליד #{res['id']} {res['name']}).".replace("  ", " "))
+    return lead_tools.get_lead(db, lead_id=res["id"])
+
+
+@app.patch("/api/leads/{lead_id}")
+def patch_lead(lead_id: int, payload: LeadPatch, request: Request, db: Session = Depends(get_db)):
+    """Only the fields sent are changed; each change is written to the activity log."""
+    user = auth.current_user(request, db)
+    lead = _lead_or_404(db, lead_id)
+    data = payload.model_dump(exclude_unset=True)
+    if data.get("status") is not None and data["status"] not in STATUS_BY_ID:
+        raise HTTPException(400, "סטטוס לא מוכר.")
+    changes = []
+    if data.pop("clear_status", False):
+        data["status"] = None
+        changes.append("status")
+    for field in ("status",):
+        if field in data and data[field] != lead.status:
+            old = STATUS_BY_ID[lead.status].label if lead.status in STATUS_BY_ID else "ללא סטטוס"
+            new = STATUS_BY_ID[data[field]].label if data[field] in STATUS_BY_ID else "ללא סטטוס"
+            lead.status = data[field]
+            db.add(LeadEvent(lead_id=lead.id, user_id=user.id, actor=user.name, kind="status", text=f"{old} ← {new}"))
+    edited = []
+    for field in ("name", "phone", "source", "first_attempt", "second_attempt", "last_update", "notes"):
+        if field in data and data[field] is not None and data[field] != getattr(lead, field):
+            setattr(lead, field, data[field].strip())
+            edited.append(field)
+    if "phone" in edited:
+        lead.phone_norm = normalize_phone(lead.phone)
+    if edited:
+        names = {"name": "שם", "phone": "נייד", "source": "מקור", "first_attempt": "ניסיון ראשון", "second_attempt": "ניסיון שני",
+                 "last_update": "עדכון אחרון", "notes": "הערות / תשלום"}
+        db.add(LeadEvent(lead_id=lead.id, user_id=user.id, actor=user.name, kind="edit", text="עודכנו: " + ", ".join(names[f] for f in edited)))
+    lead.updated_at = utcnow()
+    db.commit()
+    return lead_tools.get_lead(db, lead_id=lead.id)
+
+
+@app.post("/api/leads/{lead_id}/incoming")
+def lead_incoming(lead_id: int, payload: IncomingIn, request: Request, db: Session = Depends(get_db)):
+    """Record a message the lead sent (pasted from WhatsApp), so it shows in the reply inbox."""
+    user = auth.current_user(request, db)
+    lead = _lead_or_404(db, lead_id)
+    lead_tools.record_incoming(db, lead, payload.text, user.id)
+    return lead_tools.get_lead(db, lead_id=lead.id)
+
+
+@app.post("/api/leads/{lead_id}/smart-reply")
+def lead_smart_reply(lead_id: int, payload: SmartReplyIn, request: Request, db: Session = Depends(get_db)):
+    """Draft a WhatsApp reply to the lead's latest (or given) message. Counts toward the limits."""
+    user = auth.current_user(request, db)
+    lead = _lead_or_404(db, lead_id)
+    client = request.app.state.model_client
+    if client.name != "offline":
+        limits.check_daily_cap(db)
+    incoming = (payload.incoming if payload.incoming is not None else lead.last_incoming) or ""
+    if payload.incoming and payload.incoming.strip() != (lead.last_incoming or "").strip():
+        lead_tools.record_incoming(db, lead, payload.incoming, user.id)
+    return smart_reply.generate(db, lead, incoming, client=client, user_id=user.id, tone=payload.tone)
+
+
+@app.post("/api/leads/{lead_id}/sent")
+def lead_sent(lead_id: int, payload: SentIn, request: Request, db: Session = Depends(get_db)):
+    """The rep sent the reply from WhatsApp: mark the message answered and optionally apply the status."""
+    user = auth.current_user(request, db)
+    lead = _lead_or_404(db, lead_id)
+    if payload.status is not None and payload.status not in STATUS_BY_ID:
+        raise HTTPException(400, "סטטוס לא מוכר.")
+    lead_tools.mark_replied(db, lead, payload.reply, user.id)
+    if payload.status and payload.status != lead.status:
+        lead_tools.update_lead(db, lead_id=lead.id, status=payload.status, user_id=user.id)
+    return lead_tools.get_lead(db, lead_id=lead.id)
+
+
+@app.get("/api/templates")
+def templates(request: Request, db: Session = Depends(get_db)):
+    auth.current_user(request, db)
+    return lead_tools.list_templates(db)["templates"]
 
 
 @app.get("/api/stats")

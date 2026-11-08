@@ -1,4 +1,4 @@
-"""The morning digest: yesterday in six lines.
+"""The morning digest: the pipeline and today's focus in a few lines.
 
 Runs as a Railway cron service (`python -m app.digest`, schedule in README.md)
 or through POST /internal/digest. It only reads; the rows it reports were
@@ -13,7 +13,8 @@ from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from .config import settings
-from .db import Invoice, Message, Run, SessionLocal, init_db
+from .db import Lead, Message, Run, SessionLocal, init_db, utcnow
+from .leads_meta import compute_metrics, format_phone, is_hot, needs_reply
 
 
 def _local_bounds(day: date) -> tuple[datetime, datetime]:
@@ -28,12 +29,11 @@ def build_digest(db: Session, day: date | None = None) -> str:
     day = day or (datetime.now(tz).date() - timedelta(days=1))
     start, end = _local_bounds(day)
 
-    invoices = db.scalars(select(Invoice).where(Invoice.created_at >= start, Invoice.created_at < end)
-                          .order_by(Invoice.created_at)).all()
-    logged = [i for i in invoices if i.status == "logged"]
-    needs = [i for i in invoices if i.status == "needs_a_look"]
-    flagged = [i for i in invoices if i.flagged]
-    total = sum(i.amount or 0 for i in logged)
+    leads = list(db.scalars(select(Lead)))
+    m = compute_metrics(leads, utcnow())
+    new_yesterday = [l for l in leads if start <= l.created_at < end]
+    hot = [l for l in leads if is_hot(l)]
+    waiting = [l for l in leads if needs_reply(l)]
 
     messages = db.scalar(select(func.count()).select_from(Message)
                          .where(Message.role == "user", Message.created_at >= start, Message.created_at < end)) or 0
@@ -42,12 +42,16 @@ def build_digest(db: Session, day: date | None = None) -> str:
                       .where(Run.created_at >= start, Run.created_at < end)).one()
     run_count, cost, not_ok = int(runs[0] or 0), float(runs[1] or 0.0), int(runs[2] or 0)
 
-    lines = [f"Bakery Copilot — {day.strftime('%A %d %b %Y')}",
-             f"Invoices logged: {len(logged)} · total ₪{total:,.0f}",
-             f"Needs a look: {len(needs)}" + (" — " + "; ".join(f"{i.supplier} ({i.invoice_number or 'no number'})" for i in needs[:5]) if needs else ""),
-             f"Flagged over ₪5,000: {len(flagged)}" + (" — " + "; ".join(f"{i.supplier} ₪{i.amount:,.0f}" for i in flagged[:5]) if flagged else ""),
-             f"Chat: {messages} messages · {run_count} model runs · ${cost:.2f} of ${settings.daily_cap_usd:.2f} cap",
-             f"Runs not OK: {not_ok}" + (" — check the runs table and runbook.md" if not_ok else "")]
+    def names(rows):
+        return "; ".join(f"{l.name or format_phone(l.phone_norm)}" for l in rows[:5])
+
+    lines = [f"LeadPilot — סיכום בוקר ל-{day.strftime('%d/%m/%Y')}",
+             f"לידים חדשים אתמול: {len(new_yesterday)} · סה״כ {m['total']} · פעילים {m['active']}",
+             f"🔥 חמים לטיפול היום: {len(hot)}" + (f" — {names(hot)}" if hot else ""),
+             f"💬 ממתינים למענה: {len(waiting)}" + (f" — {names(waiting)}" if waiting else ""),
+             f"⏳ לא עודכנו מעל 3 ימים: {m['stale']} · נסגרו: {m['won']} (המרה {m['conversion_rate']:.0%})",
+             f"עוזר AI: {messages} הודעות · {run_count} ריצות · ${cost:.2f} מתוך ${settings.daily_cap_usd:.2f}"
+             + (f" · {not_ok} ריצות עם תקלה" if not_ok else "")]
     return "\n".join(lines)
 
 

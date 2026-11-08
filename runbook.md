@@ -22,22 +22,22 @@ Written while everything works. Each entry is a sequence: click here, run this, 
 3. Only then clean Git history (`git filter-repo` or a fresh repo for a small project) and force-push. Tell anyone who cloned.
 4. Add a `bug` issue describing how it leaked, and a rule to practice.md if one is missing.
 
-## Wrong rows written (an invoice logged twice, wrong amount, wrong supplier)
+## Wrong rows written (a lead updated by mistake, a wrong status)
 
 1. Pause the cron service so the digest does not report it again.
-2. Find the turn: `runs` table → by time → `conversation_id`; the UI's Invoices panel shows the rows.
+2. Find the turn: `runs` table → by time → `conversation_id`; the lead's activity log (כרטיס ליד → היסטוריית פעילות) shows who changed what.
 3. Fix forward via a ticket: a migration or a one-off script committed to the repo, reviewed, run once. Never edit rows in the database console by hand.
 4. If the cause was the prompt or the tool rules, add an eval case first, then fix.
 
 ## Database restore
 
 1. Railway → Postgres → **Backups** → pick the snapshot → restore into the **staging** environment's database.
-2. Point a staging deploy at it; open the app; check Invoices and a sales question.
+2. Point a staging deploy at it; open the app; check the leads table and a smart reply.
 3. Promote: restore into production in the same way, during a quiet hour; redeploy the web service.
 
 ## Deploy is stuck or the health check never passes
 
-1. Logs → look for the seed report (`sales_seeded: 29115`). A first deploy seeds the sales table and can take a minute; the health check timeout is 120 s.
+1. Logs → look for the seed report (`leads_seeded: 32, templates_seeded: 7`). A first deploy seeds the demo data in a second; the health check timeout is 120 s.
 2. If the database URL is wrong, `/health` returns 503 with `db:` in `problems`. Check the `DATABASE_URL` reference variable.
 3. Rollback to the previous deploy if users are waiting; fix in a PR.
 

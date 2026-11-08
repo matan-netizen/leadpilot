@@ -1,4 +1,4 @@
-"""The agent loop (Lesson 7, slide 9) and the model clients behind it.
+"""LeadPilot's agent loop (Lesson 7, slide 9) and the model clients behind it.
 
     messages = [system, history, the new message]
     repeat:
@@ -29,7 +29,7 @@ from .config import ROOT, settings
 from .costs import Usage, cost_usd
 from .db import Conversation, Message, Run, User, utcnow
 from .tools import registry
-from .tools.sales import branches, data_range
+from .tools.leads import all_leads
 
 try:  # the SDK is optional at import time so tests run without it configured
     import anthropic
@@ -39,8 +39,7 @@ except ImportError:  # pragma: no cover
 MAX_TOOL_ROUNDS = 6
 SYSTEM_PATH = ROOT / "app" / "prompts" / "system.md"
 FALLBACK_MODELS = {"claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5", "claude-fable-5-1"}
-REFUSAL_TEXT = ("I can't help with that request. If it is about sales or invoices, try rephrasing it; "
-                "for anything else, ask Dana.")
+REFUSAL_TEXT = "לא אוכל לעזור בבקשה הזו. אם היא קשורה ללידים או למענה ללקוחות – נסו לנסח אותה אחרת."
 
 
 # ---------------------------------------------------------------------------
@@ -71,6 +70,7 @@ class FakeModelClient:
         self.turns: list[list[ModelEvent]] = list(turns or [])
         self.last_messages: list[dict] = []
         self.calls = 0
+        self.completions: list[str] = []
 
     def stream(self, *, system, messages, tools) -> Iterator[ModelEvent]:
         self.calls += 1
@@ -83,6 +83,13 @@ class FakeModelClient:
         reply = f"(fake model) You said: {text.strip()[:200]}"
         yield ModelEvent(type="text", text=reply)
         yield ModelEvent(type="stop", stop_reason="end_turn", usage=Usage(10, 5), content=[{"type": "text", "text": reply}])
+
+    def complete(self, *, system: str, prompt: str, max_tokens: int = 600) -> tuple[str, Usage]:
+        self.calls += 1
+        self.last_messages = [{"role": "user", "content": prompt}]
+        if self.completions:
+            return self.completions.pop(0), Usage(20, 10)
+        return '{"reply": "(fake) תודה על ההודעה!", "intent": "other", "suggested_status": null, "summary": "fake"}', Usage(20, 10)
 
 
 class AnthropicModelClient:
@@ -123,9 +130,23 @@ class AnthropicModelClient:
         yield ModelEvent(type="stop", stop_reason=final.stop_reason or "end_turn", usage=usage, content=content)
 
 
+    def complete(self, *, system: str, prompt: str, max_tokens: int = 600) -> tuple[str, Usage]:
+        """One short, tool-less call (the smart-reply generator)."""
+        msg = self.client.messages.create(model=settings.model, max_tokens=max_tokens,
+                                          system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+                                          messages=[{"role": "user", "content": prompt}])
+        text = "".join(getattr(b, "text", "") for b in msg.content if getattr(b, "type", "") == "text")
+        u = msg.usage
+        return text, Usage(u.input_tokens, u.output_tokens, u.cache_read_input_tokens or 0, u.cache_creation_input_tokens or 0)
+
+
 def get_model_client() -> ModelClient:
     if settings.model_provider == "fake":
         return FakeModelClient()
+    if settings.model_provider == "offline":
+        from .offline import OfflineModelClient
+
+        return OfflineModelClient()
     return AnthropicModelClient()
 
 
@@ -134,12 +155,11 @@ def get_model_client() -> ModelClient:
 # ---------------------------------------------------------------------------
 
 def build_system(db: Session) -> list[dict]:
-    d_from, d_to = data_range(db)
     today = datetime.now(ZoneInfo(settings.timezone)).date()
     text = (SYSTEM_PATH.read_text(encoding="utf-8")
-            .replace("{{DATA_FROM}}", str(d_from or "unknown")).replace("{{DATA_TO}}", str(d_to or "unknown"))
-            .replace("{{BRANCHES}}", ", ".join(branches(db)) or "unknown")
-            .replace("{{TODAY}}", today.isoformat()))
+            .replace("{{BUSINESS}}", settings.business_name)
+            .replace("{{LEAD_COUNT}}", str(len(all_leads(db))))
+            .replace("{{TODAY}}", today.strftime("%A %Y-%m-%d")))
     # One cached block: tools + system form the stable prefix every turn reuses.
     return [{"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}]
 
@@ -177,28 +197,32 @@ def _summarise_result(result_text: str) -> str:
         return result_text[:90]
     if "error" in r:
         return f"error: {str(r['error'])[:80]}"
-    if "status" in r and "created" in r:  # log_invoice
-        return f"{'created' if r['created'] else r.get('reason', 'existing')} · {r['status']}" + (" · flagged" if r.get("flagged") else "")
-    if "matches" in r:  # lookup_supplier
-        return f"{len(r['matches'])} match" + ("" if len(r["matches"]) == 1 else "es")
-    if "row_count" in r:  # sales_query grouped
-        return f"{r['row_count']} rows · {r['metric']} by {r['group_by']}"
-    if "value" in r:  # sales_query total
-        return f"{r['metric']} = {r['value']}"
+    if "created" in r:  # create_lead
+        return f"נוצר ליד #{r['id']}" if r["created"] else f"כבר קיים (#{r.get('id')})"
+    if "updated" in r:  # update_lead
+        return f"ליד #{r['id']}: " + (", ".join(r["updated"]) or "ללא שינוי")
+    if "leads" in r and "count" in r:  # search_leads
+        return f"{r['count']} לידים"
+    if "conversion_rate" in r:  # leads_overview
+        return f"{r['total']} לידים · {r['hot']} חמים · {r['waiting_reply']} ממתינים"
+    if "templates" in r:
+        return f"{len(r['templates'])} תבניות"
+    if "phone_display" in r and "activity" in r:  # get_lead
+        return f"{r.get('name') or 'ללא שם'} · {r['status_label']}"
     return result_text[:90]
 
 
 def _friendly(exc: Exception) -> str:
     if anthropic is not None:
         if isinstance(exc, (anthropic.RateLimitError, getattr(anthropic, "OverloadedError", anthropic.RateLimitError))):
-            return "The model is busy right now. Try again in a minute."
+            return "המודל עמוס כרגע. נסו שוב בעוד דקה."
         if isinstance(exc, anthropic.AuthenticationError):
-            return "The model key is not valid. Check ANTHROPIC_API_KEY."
+            return "מפתח ה-API לא תקין. בדקו את ANTHROPIC_API_KEY."
         if isinstance(exc, anthropic.APIConnectionError):
-            return "Could not reach the model. Check the connection and try again."
+            return "אין חיבור למודל. בדקו את החיבור ונסו שוב."
         if isinstance(exc, anthropic.BadRequestError):
-            return f"The request was rejected: {exc.message if hasattr(exc, 'message') else exc}"
-    return "Something went wrong on our side. The error was recorded; try again."
+            return f"הבקשה נדחתה: {exc.message if hasattr(exc, 'message') else exc}"
+    return "משהו השתבש אצלנו. השגיאה נרשמה – נסו שוב."
 
 
 def run_turn(db: Session, *, user: User, conversation: Conversation | None, text: str, image: dict | None,
@@ -209,7 +233,7 @@ def run_turn(db: Session, *, user: User, conversation: Conversation | None, text
     image_ref = f"img_{hashlib.sha256(image['data'].encode()).hexdigest()[:10]}" if image else None
 
     if conversation is None:
-        conversation = Conversation(user_id=user.id, title=(text or "Invoice photo")[:60])
+        conversation = Conversation(user_id=user.id, title=(text or "צילום מסך")[:60])
         db.add(conversation)
         db.commit()
         db.refresh(conversation)
@@ -218,7 +242,7 @@ def run_turn(db: Session, *, user: User, conversation: Conversation | None, text
     # 1. The user's message is saved first: it counts for the rate limit even if the stream dies.
     stored = text + (f"\n[image {image_ref}]" if image_ref else "")
     user_msg = Message(conversation_id=conversation.id, user_id=user.id, role="user",
-                       content=stored or "(invoice photo)", has_image=bool(image))
+                       content=stored or "(צילום מסך)", has_image=bool(image))
     db.add(user_msg)
     conversation.updated_at = utcnow()
     db.commit()
@@ -228,7 +252,7 @@ def run_turn(db: Session, *, user: User, conversation: Conversation | None, text
     content: list[dict] = []
     if image:
         content.append({"type": "image", "source": {"type": "base64", "media_type": image["media_type"], "data": image["data"]}})
-    prompt_text = text or "Please read this invoice and log it."
+    prompt_text = text or "זה צילום מסך של שיחה עם ליד. זהה את הליד, סכם מה הוא רוצה והצע תשובה."
     if image_ref:
         prompt_text += f"\n\n(image reference: {image_ref})"
     content.append({"type": "text", "text": prompt_text})
@@ -275,7 +299,7 @@ def run_turn(db: Session, *, user: User, conversation: Conversation | None, text
                 if not tool_uses:
                     break
                 if round_no >= MAX_TOOL_ROUNDS:
-                    note = "\n\nI stopped after too many tool steps. Please ask again, more specifically."
+                    note = "\n\nעצרתי אחרי יותר מדי שלבים. נסו לשאול שוב, בצורה ממוקדת יותר."
                     pieces.append(note)
                     yield {"type": "text", "text": note}
                     break
@@ -297,7 +321,7 @@ def run_turn(db: Session, *, user: User, conversation: Conversation | None, text
                 pieces.append(REFUSAL_TEXT)
                 yield {"type": "text", "text": REFUSAL_TEXT}
             elif stop.stop_reason == "max_tokens":
-                note = "\n\n(Reply cut short at the length limit.)"
+                note = "\n\n(התשובה נקטעה במגבלת האורך.)"
                 pieces.append(note)
                 yield {"type": "text", "text": note}
             break

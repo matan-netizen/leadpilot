@@ -6,86 +6,113 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from . import invoices, sales
+from ..leads_meta import SOURCES, STAGE_IDS, STATUS_IDS, STATUSES
+from . import leads
+
+_STATUS_HELP = "; ".join(f"{s.id} = {s.label}" for s in STATUSES)
 
 TOOLS: list[dict[str, Any]] = [
     {
-        "name": "sales_query",
+        "name": "leads_overview",
         "description": (
-            "Read-only query over the bakery's sales lines (one row per product per order). "
-            "Use it for any question about revenue, items sold, order counts, best sellers, branches, "
-            "channels or trends. Pick a metric and a grouping; filter by date range (YYYY-MM-DD), branch, "
-            "product or category. Refunded lines are excluded unless include_refunded is true. "
-            "Never guess numbers: if the answer needs data, call this tool."
+            "Live numbers for the whole pipeline: totals, leads per stage and per status, hot leads, stale leads "
+            "(no update for 3+ days), leads waiting for a reply, conversion and win rate, duplicate phones. "
+            "Call it for any question about how many / how the pipeline looks. Never guess a number."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "search_leads",
+        "description": (
+            "Find leads. Free-text query matches name, notes, follow-up text and phone (any format, 3+ digits). "
+            "Filter by stage, status, hot_only, stale_only, needs_reply_only. Returns id, name, phone, status, next action. "
+            f"Statuses: {_STATUS_HELP}."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "metric": {"type": "string", "enum": sorted(sales.METRICS), "description": "revenue (ILS), items (units), orders (distinct orders) or avg_order (revenue per order)."},
-                "group_by": {"type": "string", "enum": sorted(sales.GROUP_BY), "description": "none for a single total; product/branch/... for a ranking; day/week/month for a trend."},
-                "date_from": {"type": "string", "description": "inclusive start date YYYY-MM-DD"},
-                "date_to": {"type": "string", "description": "inclusive end date YYYY-MM-DD"},
-                "branch": {"type": "string", "description": "substring match on branch name"},
-                "product": {"type": "string", "description": "substring match on product name"},
-                "category": {"type": "string", "description": "substring match on category (Bread, Pastry, Drinks, Sweet, ...)"},
-                "include_refunded": {"type": "boolean", "default": False},
-                "top_n": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
+                "query": {"type": "string"},
+                "stage": {"type": "string", "enum": STAGE_IDS + ["active"], "description": "active = new+engaged+closing"},
+                "status": {"type": "string", "enum": STATUS_IDS},
+                "hot_only": {"type": "boolean"},
+                "stale_only": {"type": "boolean"},
+                "needs_reply_only": {"type": "boolean", "description": "the lead wrote to us and nobody answered yet"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 15},
             },
-            "required": ["metric", "group_by"],
             "additionalProperties": False,
         },
     },
     {
-        "name": "lookup_supplier",
-        "description": "Look up a supplier by (partial) name in the bakery's supplier list. Returns the canonical name and the items and usual prices we buy from them. Call it before logging an invoice to normalise the supplier name.",
-        "input_schema": {
-            "type": "object",
-            "properties": {"name": {"type": "string", "description": "supplier name as written on the invoice"}},
-            "required": ["name"],
-            "additionalProperties": False,
-        },
+        "name": "get_lead",
+        "description": "Full card of one lead: all fields, next action, recommended WhatsApp template and the last 10 activity events. Call it before writing a reply for a specific lead.",
+        "input_schema": {"type": "object", "properties": {"lead_id": {"type": "integer"}}, "required": ["lead_id"], "additionalProperties": False},
     },
     {
-        "name": "log_invoice",
+        "name": "update_lead",
         "description": (
-            "Record one supplier invoice as one row. Pass the fields exactly as read from the document; "
-            "pass amount as null if you cannot read it with confidence, and the row will be marked needs_a_look. "
-            "Always pass source_ref (the image reference given in the message) so the same invoice is never logged twice. "
-            "Never call this to modify or delete an existing row."
+            "Change one lead: set a new status, append a note, or replace the 'last update' text. Only when the user asked for the change "
+            "or clearly reported what happened with the lead. Never delete. Reply with what changed."
         ),
         "input_schema": {
             "type": "object",
             "properties": {
-                "supplier": {"type": "string"},
-                "invoice_number": {"type": ["string", "null"]},
-                "amount": {"type": ["number", "null"], "description": "total amount, numbers only; null if unreadable"},
-                "currency": {"type": "string", "default": "ILS"},
-                "invoice_date": {"type": ["string", "null"], "description": "YYYY-MM-DD"},
-                "source_ref": {"type": ["string", "null"], "description": "the image reference from the message, e.g. img_8f3a2c"},
-                "notes": {"type": ["string", "null"]},
+                "lead_id": {"type": "integer"},
+                "status": {"type": "string", "enum": STATUS_IDS},
+                "append_note": {"type": "string"},
+                "last_update": {"type": "string"},
+                "name": {"type": "string"},
             },
-            "required": ["supplier", "amount"],
+            "required": ["lead_id"],
             "additionalProperties": False,
         },
+    },
+    {
+        "name": "create_lead",
+        "description": "Add a new lead. Phone is required; duplicates (same number in any format) are not created – the existing lead id is returned instead.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "phone": {"type": "string"},
+                "name": {"type": "string"},
+                "source": {"type": "string", "enum": SOURCES},
+                "notes": {"type": "string"},
+            },
+            "required": ["phone"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "list_templates",
+        "description": "The business's WhatsApp message templates by lead type. Use them as the base for any message you draft.",
+        "input_schema": {"type": "object", "properties": {"lead_type": {"type": "string"}}, "additionalProperties": False},
     },
 ]
 
 TOOL_NAMES = {t["name"] for t in TOOLS}
+WRITE_TOOLS = {"update_lead", "create_lead"}
 MAX_RESULT_CHARS = 12000
 
 
 def execute(name: str, tool_input: dict[str, Any], db: Session, *, user_id: int | None = None) -> str:
     """Run one tool and return its result as a JSON string for the model."""
+    args = _clean(tool_input)
     try:
-        if name == "sales_query":
-            result = sales.sales_query(db, **_clean(tool_input))
-        elif name == "lookup_supplier":
-            result = invoices.lookup_supplier(db, name=str(tool_input.get("name", "")))
-        elif name == "log_invoice":
-            result = invoices.log_invoice(db, logged_by=user_id, **_clean(tool_input))
+        if name == "leads_overview":
+            result = leads.leads_overview(db)
+        elif name == "search_leads":
+            result = leads.search_leads(db, **args)
+        elif name == "get_lead":
+            result = leads.get_lead(db, lead_id=int(args.get("lead_id", 0)))
+        elif name == "update_lead":
+            result = leads.update_lead(db, user_id=user_id, **args)
+        elif name == "create_lead":
+            result = leads.create_lead(db, user_id=user_id, **args)
+        elif name == "list_templates":
+            result = leads.list_templates(db, **args)
         else:
             result = {"error": f"unknown tool '{name}'"}
     except Exception as exc:  # the loop must survive a bad input; the model sees the error
+        db.rollback()
         result = {"error": f"{type(exc).__name__}: {exc}"}
     text = json.dumps(result, ensure_ascii=False, default=str)
     if len(text) > MAX_RESULT_CHARS:

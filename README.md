@@ -1,81 +1,78 @@
-# Bakery Copilot
+# LeadPilot — ניהול לידים + מענה חכם
 
-A chat app for one bakery chain, built the Lesson 9 way: a chat UI, a backend with an agent loop and three tools, Postgres, and a morning digest, all on Railway for a few dollars a month. Staff ask about sales and log supplier invoices from a photo.
+<div dir="rtl">
 
-The plan lives in five files: [spec.md](spec.md) (what), [architecture.md](architecture.md) (how and where), [practice.md](practice.md) (how we work), [runbook.md](runbook.md) (when it breaks), [docs/tickets.md](docs/tickets.md) (the work, as issues). `CLAUDE.md` points Claude Code at the first three.
+דאשבורד לניהול לידים עם **מענה חכם בוואטסאפ** ו**עוזר מכירות AI** (Claude). משפך מכירה, "לטיפול היום", טבלה עם חיפוש וסינון, לוח Kanban עם גרירה, כרטיס ליד עם היסטוריה – ולכל ליד שכתב לנו, טיוטת תשובה מוכנה לשליחה בלחיצה.
 
-## Run it locally
+> נבנה על בסיס [Bakery Copilot](https://github.com/MaceTenth/bakery-copilot) מהשיעורים (FastAPI · לולאת סוכן עם כלים · Postgres · cron על Railway), בעיצוב ובסגנון של [Dashboard - Leads](https://github.com/seomr2018-del/Dashboard---Leads---3).
 
-macOS and Linux:
+| מסמך | תוכן |
+|---|---|
+| [spec.md](spec.md) | מה בונים – מקור האמת |
+| [architecture.md](architecture.md) | איך ואיפה, והחלטות |
+| [practice.md](practice.md) · [runbook.md](runbook.md) | תהליך עבודה · כשמשהו נשבר |
+
+## מה יש בפנים
+
+| לשונית | מה עושים בה |
+|---|---|
+| **סקירה** | 6 כרטיסי KPI, משפך לפי שלב, פילוח לפי סטטוס, לטיפול היום, ממתינים למענה, איכות נתונים |
+| **לידים** | טבלה: חיפוש (שם / טקסט / טלפון בכל פורמט), שלב, סטטוס, 🔥 חמים · 💬 ממתינים · ⏳ לא עודכנו · 👥 כפולים, מיון, CSV |
+| **לוח** | Kanban של 6 שלבים – גרירה משנה סטטוס ונשמרת |
+| **מענה חכם** | ההודעה האחרונה מהליד → Claude מנסח תשובה (חם / קצר / רשמי), מזהה כוונה ומציע סטטוס → עריכה → שליחה בוואטסאפ + עדכון הליד |
+| **עוזר AI** | צ'אט שרואה את הלידים בזמן אמת: "מה לטפל היום?", "נסח מענה לדוד", "דיברתי עם רועי, שלחתי הצעה – תעדכן" |
+| **תבניות וואטסאפ** | התבניות לפי סוג ליד, עם העתקה |
+
+ועוד: מצב כהה, RTL מלא, מובייל מ-390px, היסטוריית פעילות לכל ליד, סיכום בוקר יומי (cron), מגבלות שימוש ותקציב יומי.
+
+**בלי מפתח API?** הכול עובד – המענה החכם והעוזר עוברים ל"מצב כללים" (מסווג כוונות + תבניות). מוסיפים `ANTHROPIC_API_KEY` ו-Claude נכנס לפעולה.
+
+## הרצה מקומית
 
 ```bash
-cp .env.example .env         # set APP_PASSWORD, APP_SECRET, ANTHROPIC_API_KEY
+cp .env.example .env         # APP_PASSWORD, APP_SECRET, ואופציונלית ANTHROPIC_API_KEY
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
-Windows, in PowerShell 7 with Python 3.12 (`winget install Python.Python.3.12`):
+http://localhost:8000 → שם + הסיסמה. בהפעלה הראשונה נטענים 32 לידי דמה ו-7 תבניות.
 
-```powershell
-Copy-Item .env.example .env  # set APP_PASSWORD, APP_SECRET, ANTHROPIC_API_KEY
-py -3.12 -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-uvicorn app.main:app --reload
-```
-
-If PowerShell refuses to run `Activate.ps1` ("running scripts is disabled on this system"), run `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser` once, or skip activation and start each command with `.venv\Scripts\python -m`, for example `.venv\Scripts\python -m uvicorn app.main:app --reload`.
-
-Open http://localhost:8000, type a name and the password. The first start seeds SQLite with the 29,115-line sales dataset and 10 suppliers (a few seconds).
-
-Try: "What sold best in the last week of August 2026?", "Revenue by branch for August 2026", or attach an invoice photo.
-
-## Tests and evals
+## בדיקות
 
 ```bash
-pytest -q                    # model mocked; seconds; no key needed
-python -m evals.run          # real model; one turn per case; appends evals/history.csv
-python -m evals.run --judge  # also grades wording with a cheaper model
+pytest -q                    # 49 בדיקות, המודל מדומה, בלי מפתח
+python -m evals.run          # המודל האמיתי מול evals/cases.yaml
 ```
 
-The same three commands work in PowerShell once `.venv` is active.
+## פריסה ב-Railway
 
-Tests prove the deterministic parts (parsing, dedup, limits, streaming, the tool loop with a scripted model). Evals prove the agent still behaves after a prompt, tool or model change. CI runs tests on every PR, and evals when the `ANTHROPIC_API_KEY` secret is set.
+1. Project → **Deploy from GitHub repo** → הריפו הזה (שירות `web`). Railpack בונה מ-`requirements.txt` ו-`.python-version`.
+2. **+ New → Database → PostgreSQL**.
+3. משתני הסביבה של `web`:
 
-## Deploy on Railway
-
-The short version follows; the full walkthrough for macOS, Linux and Windows, with every variable and secret, the CLI commands, the dashboard path, day-two operations and troubleshooting, is [docs/deploy-railway.md](docs/deploy-railway.md).
-
-1. **Repo.** Push this folder to a private GitHub repo. Create the issues with `scripts/create_issues.sh` if you want the board (a bash script: on Windows, run it from Git Bash).
-2. **Project and services.** With the CLI (`brew install railway` on macOS, `scoop install railway` on Windows): `railway login`, `railway init --name bakery-copilot`, `railway add --database postgres`, then `railway add --service web --repo <owner>/bakery-copilot --branch main` and the same with `--service digest`. Railway's GitHub app needs access to the repo (Railway → Account Settings → Integrations → GitHub), or builds from GitHub fail with "repository not accessible".
-3. **Settings from code.** Once: `npm install --prefix .railway`. Then from the repo root `railway config plan` and `railway config apply`: `.railway/railway.ts` sets both start commands, the `/health` check, restart policies and the digest's cron schedule (`30 4 * * *`, UTC; 07:30 Israel in summer, 06:30 in winter). Railpack builds from `requirements.txt` with the Python version in `.python-version`, no Dockerfile.
-4. **Variables** on the web service: `APP_ENV=production`, `APP_PASSWORD`, `APP_SECRET` (`openssl rand -hex 32`, or the PowerShell generator in the guide), `ANTHROPIC_API_KEY`, `DATABASE_URL` as a reference to `${{Postgres.DATABASE_URL}}`, `MODEL=claude-opus-5-5`, `DAILY_CAP_USD=3.00`, `CRON_SECRET`, optionally `DIGEST_WEBHOOK_URL`, `TIMEZONE=Asia/Jerusalem`. Redeploy.
-5. **Digest variables.** The digest service references the web service's values: `APP_ENV=${{web.APP_ENV}}`, and the same for `APP_PASSWORD`, `APP_SECRET`, `ANTHROPIC_API_KEY`, `CRON_SECRET`, `MODEL` and `TIMEZONE`, plus `DATABASE_URL=${{Postgres.DATABASE_URL}}`. Set `DIGEST_WEBHOOK_URL` here if the digest should post somewhere. The service runs for seconds and exits.
-6. **First check.** Open the URL, sign in, ask a sales question, attach an invoice. `GET /health` must be 200. Then run through spec.md §7.
-
-Deploy on push to `main` is on by default. Rollback is Deployments → previous deploy → Redeploy.
-
-## Cost (as of October 2026)
-
-| Item | Estimate |
+| משתנה | ערך |
 |---|---|
-| Railway web service (0.05–0.1 vCPU, ~200 MB) | $3–4 / month |
-| Railway Postgres (small, 1 GB) | $1–2 / month |
-| Cron service (seconds a day) | cents |
-| **Railway total** | **$4–6 / month**, inside the Hobby plan's $5 most months |
-| Claude, 300 turns a day with history (Opus 5.5) | ~$18 / month; Sonnet 5.5 ~$9 |
+| `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` |
+| `APP_ENV` | `production` |
+| `APP_PASSWORD` | סיסמת הצוות |
+| `APP_SECRET` | `openssl rand -hex 32` |
+| `ANTHROPIC_API_KEY` | אופציונלי – בלעדיו מצב כללים |
+| `MODEL` | `claude-opus-5-5` (או `claude-sonnet-5-5` לחיסכון) |
+| `BUSINESS_NAME` | שם העסק שלכם |
 
-The model is the bill. `HISTORY_LIMIT`, `MODEL_EFFORT` and prompt caching are the three levers; `DAILY_CAP_USD` is the brake.
+4. Settings: Start command `uvicorn app.main:app --host 0.0.0.0 --port $PORT`, Healthcheck `/health` (או `railway config apply` מ-`.railway/railway.ts`). Networking → **Generate Domain**.
+5. אופציונלי: שירות `digest` מאותו ריפו עם `python -m app.digest` ו-cron `30 4 * * *`.
 
-## Layout
+## מבנה
 
 ```
-app/            backend: main.py (API), agent.py (loop), tools/, db.py, auth.py, limits.py, costs.py, digest.py
-app/prompts/    system.md — the agent's job description
-static/         the chat UI (plain HTML, CSS, JS)
-data/           bakery_sales.csv (read-only dataset), suppliers.csv
-tests/          pytest, model mocked
-evals/          cases.yaml, run.py, history.csv
-docs/           tickets.md, watch.md, deploy-railway.md
+app/            main.py (API) · agent.py (לולאת הסוכן) · offline.py (מצב כללים) · smart_reply.py
+                leads_meta.py (סטטוסים, שלבים, טלפונים, מדדים) · tools/ · db.py · digest.py
+app/prompts/    system.md (העוזר) · smart_reply.md (המענה החכם)
+static/         הממשק: HTML · CSS · JS, בלי build
+data/           leads.json · templates.json (נתוני דמה)
+tests/ evals/   pytest · מקרי הערכה למודל
 ```
+
+</div>

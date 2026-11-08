@@ -1,66 +1,56 @@
 <!doctype html>
-<html lang="en">
+<html lang="he" dir="rtl">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Bakery Copilot</title>
+  <title>LeadPilot · ניהול לידים ומענה חכם</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Assistant:wght@400;500;600;700&display=swap">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='8' fill='%232a78d6'/><path d='M9 22V10h3v9h6v3z' fill='white'/><circle cx='23' cy='11' r='3' fill='white'/></svg>">
   <link rel="stylesheet" href="/static/styles.css">
+  <script>
+    try {
+      const t = localStorage.getItem('theme');
+      if (t === 'dark' || (!t && matchMedia('(prefers-color-scheme: dark)').matches)) document.documentElement.classList.add('dark');
+    } catch (_) {}
+  </script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js" defer></script>
 </head>
 <body>
-  <div id="login" class="modal hidden" role="dialog" aria-labelledby="login-title">
-    <form id="login-form" class="card">
-      <p class="kicker">BAKERY COPILOT</p>
-      <h1 id="login-title">Sign in</h1>
-      <label>Your name<input id="login-name" name="name" autocomplete="username" required minlength="2" maxlength="40" placeholder="Dana"></label>
-      <label>Team password<input id="login-password" name="password" type="password" autocomplete="current-password" required></label>
-      <button type="submit" class="primary">Enter</button>
-      <p id="login-error" class="error" role="alert"></p>
+  <div id="login" class="login hidden">
+    <form id="login-form" class="card" autocomplete="on">
+      <div class="logo" aria-hidden="true">L</div>
+      <h1>LeadPilot</h1>
+      <p>ניהול לידים + מענה חכם בוואטסאפ</p>
+      <div class="form">
+        <label class="field"><span>השם שלך</span><input id="login-name" class="input" autocomplete="username" required minlength="2" maxlength="40" placeholder="למשל: מתן"></label>
+        <label class="field"><span>סיסמת הצוות</span><input id="login-password" class="input" type="password" autocomplete="current-password" required></label>
+        <button type="submit" class="btn primary">כניסה</button>
+        <p id="login-error" class="error" role="alert"></p>
+      </div>
     </form>
   </div>
 
-  <div id="app" class="app hidden">
-    <aside class="sidebar">
-      <div class="brand">
-        <span class="dot"></span>
-        <div><strong>Bakery Copilot</strong><small id="who"></small></div>
+  <div id="app" class="shell hidden">
+    <header class="topbar">
+      <div class="title">
+        <h1><span class="logo" aria-hidden="true">L</span> ניהול לידים</h1>
+        <p class="sub" id="subline"></p>
       </div>
-      <button id="new-chat" class="primary wide">+ New chat</button>
-      <nav id="conversations" class="conversations" aria-label="Conversations"></nav>
-      <div class="sidebar-foot">
-        <button id="toggle-invoices" class="ghost">Invoices</button>
-        <button id="logout" class="ghost">Sign out</button>
-      </div>
-    </aside>
+      <button class="btn secondary" id="btn-refresh" aria-label="רענון נתונים"><span data-i="refresh"></span><span class="lbl-txt">רענון</span></button>
+      <button class="btn secondary" id="btn-csv" aria-label="ייצוא הלידים המסוננים ל-CSV"><span data-i="download"></span><span class="lbl-txt">CSV</span></button>
+      <button class="btn ghost icon-only" id="btn-theme" aria-label="החלפת מצב כהה/בהיר"><span data-i="moon"></span></button>
+      <button class="btn ghost icon-only" id="btn-logout" aria-label="התנתקות"><span data-i="logout"></span></button>
+      <button class="btn primary" id="btn-new"><span data-i="plus"></span>ליד חדש</button>
+    </header>
 
-    <main class="main">
-      <header class="topbar">
-        <h2 id="conv-title">New chat</h2>
-        <span id="status" class="status"></span>
-      </header>
+    <div id="error" class="error-banner hidden" role="alert"><span id="error-text"></span><button id="error-close" aria-label="סגירת הודעה"><span data-i="x"></span></button></div>
 
-      <section id="messages" class="messages" aria-live="polite"></section>
-
-      <form id="composer" class="composer">
-        <label class="attach" title="Attach an invoice photo">
-          <input id="image" type="file" accept="image/png,image/jpeg,image/webp,image/gif">
-          <span>📎</span>
-        </label>
-        <textarea id="input" rows="1" placeholder="Ask about sales, or attach an invoice…" required></textarea>
-        <button id="send" type="submit" class="primary">Send</button>
-      </form>
-      <p id="attachment" class="attachment hidden"></p>
-    </main>
-
-    <aside id="invoices" class="panel hidden" aria-label="Recent invoices">
-      <header><h3>Recent invoices</h3><button id="close-invoices" class="ghost">✕</button></header>
-      <table>
-        <thead><tr><th>Date</th><th>Supplier</th><th>Amount</th><th>Status</th></tr></thead>
-        <tbody id="invoice-rows"></tbody>
-      </table>
-    </aside>
+    <nav class="tabs" role="tablist" id="tabs"></nav>
+    <main id="view" aria-live="polite"></main>
   </div>
 
+  <div id="layer"></div>
   <script src="/static/app.js" defer></script>
 </body>
 </html>

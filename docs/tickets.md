@@ -1,3 +1,5 @@
+> Historical: these are the tickets of the original Bakery Copilot. LeadPilot's scope is in spec.md.
+
 # Tickets — Bakery Copilot
 
 The spec broken into tickets a stranger could test, grouped by milestone. Each becomes a GitHub Issue on the project board (To do / In progress / Done). `scripts/create_issues.sh` creates them with `gh` once the repo exists.

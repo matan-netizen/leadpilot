@@ -1,56 +1,53 @@
-# spec.md — Bakery Copilot
+# spec.md — LeadPilot: ניהול לידים + מענה חכם
 
-A chat app for one bakery chain: staff ask about sales and log supplier invoices by sending a photo. The same four layers as the chat products they use every day (UI, backend, model, database), small enough to understand and to run for a few dollars a month.
+<div dir="rtl">
 
-## 1. Users
+דאשבורד לניהול לידים של עסק שירות קטן (בדמו: "סטודיו פיקסל – בניית אתרים ושיווק דיגיטלי"), עם שתי יכולות AI: **מענה חכם** – טיוטת תשובת וואטסאפ מוכנה לכל ליד שכתב לנו, ו**עוזר מכירות** בצ'אט שרואה את כל הלידים בזמן אמת, עונה על שאלות ומעדכן לידים בשפה טבעית.
 
-- Dana (owner) and three staff. Ten people at most.
-- From phones in the shops and the office laptop. Hebrew and English.
-- Access: one shared team password plus a typed name. Not a public app. Not multi-tenant.
+המבנה (UI · backend עם לולאת סוכן וכלים · Postgres · cron) נשאר מפרויקט Bakery Copilot מהשיעורים; הדומיין, העיצוב, הפרומפטים והכלים הוחלפו. העיצוב והמודל העסקי (12 סטטוסים ב-6 שלבים, ליד חם, לא עודכן, כפולים) לקוחים מדאשבורד הלידים.
 
-## 2. Jobs
+## 1. משתמשים
 
-1. **Answer a sales question** from the sales database: best sellers, revenue by branch or period, item counts, trends. Every number comes from the data, never from memory.
-2. **Log an invoice** from a photo or typed details: supplier, number, amount, date. One invoice becomes one row. An unreadable amount is never guessed.
-3. **Keep every conversation** so a user can come back to it.
-4. **Send a morning digest**: yesterday's invoices, what needs a look, chat spend.
+| תפקיד | שימוש עיקרי |
+|---|---|
+| בעל העסק | סקירה, משפך, אחוזי המרה, לידים תקועים |
+| נציג מכירות | "לטיפול היום", תיבת מענה חכם, וואטסאפ, עדכון סטטוס |
+| מנהל מכירות | לידים בסטטוס "מעוניין – מנהל מכירות יחזור" ו"לקראת סגירה" |
 
-## 3. Not in v1
+כניסה: סיסמת צוות אחת + שם. לא אפליקציה ציבורית.
 
-Multi-tenant. Public sign-up. Payments or bank actions. Editing or deleting invoices from the chat. Mobile app. Voice. Exporting reports. Anything that writes to the sales data.
+## 2. מה המערכת עושה
 
-## 4. Speed, per job
+1. **סקירה** – 6 כרטיסי KPI, משפך לפי שלב, פילוח לפי סטטוס, "לטיפול היום", "ממתינים למענה", איכות נתונים (לא עודכנו, כפולים, בלי שם, בלי סטטוס).
+2. **לידים** – טבלה עם חיפוש (שם/טקסט/טלפון בכל פורמט), סינון לפי שלב/סטטוס, מתגים (חמים · ממתינים · לא עודכנו · כפולים), מיון, ייצוא CSV עם BOM.
+3. **לוח** – Kanban של 6 שלבים; גרירה משנה סטטוס לברירת המחדל של השלב.
+4. **כרטיס ליד** – הצעד הבא, מענה חכם, פנייה מתבנית (התבנית המומלצת מסומנת ⭐), עריכה (נשלחים רק שדות שהשתנו), היסטוריית פעילות.
+5. **מענה חכם** – תיבת "ממתינים למענה": ההודעה האחרונה של הליד → Claude מנסח תשובה (טון: חם/קצר/רשמי), מזהה כוונה ומציע סטטוס → הנציג עורך ושולח בוואטסאפ בלחיצה (`wa.me`), והליד מסומן כנענה + הסטטוס מתעדכן.
+6. **עוזר AI** – צ'אט עם כלים: `leads_overview`, `search_leads`, `get_lead`, `update_lead`, `create_lead`, `list_templates`. אפשר לצרף צילום מסך של שיחת וואטסאפ.
+7. **סיכום בוקר** – cron יומי: לידים חדשים, חמים, ממתינים, לא עודכנו, עלות AI.
 
-| Job | Answer | Mechanism |
-|---|---|---|
-| Chat reply | starts within 2 s, streams | server-sent events from the backend |
-| Invoice from a photo | within one turn (seconds) | same turn; the model reads the image and calls the tool |
-| Morning digest | by 07:45 | scheduled job, no one waits |
+## 3. מחוץ לתחום (v1)
 
-## 5. Data
+שליחה אוטומטית לוואטסאפ (הנציג שולח ידנית) · מחיקת לידים · הרשאות לפי משתמש · מספר עסקים.
 
-- **Kept**: users (name only), conversations, messages (text; images are not stored), invoices, one run record per model turn (tokens, cost, tools, status), the sales dataset (read-only, 29,115 lines).
-- **Retention**: conversations 90 days (manual purge in v1). Runs kept for the digest and the bill.
-- **Sensitive**: supplier names and amounts are business data; the team password and the API key are secrets and live only in Variables.
+## 4. בלי מפתח API
 
-## 6. Limits
+המערכת עובדת במלואה גם בלי `ANTHROPIC_API_KEY`: הדאשבורד מלא, והמענה החכם והעוזר עוברים ל"מצב כללים" (מסווג כוונות + תבניות). מוסיפים מפתח ב-Railway → Claude נכנס לפעולה בלי שינוי קוד.
 
-- Per user: 30 messages per hour. Images under 5 MB.
-- Per app: $3.00 of model spend per local day; past that the chat says "back tomorrow".
-- Invoices over ₪5,000 are logged and flagged for Dana; nothing is paid or acted on.
-- History resent per turn: last 20 messages.
+## 5. מגבלות
 
-## 7. Done — twelve checks a stranger can run
+30 הודעות לעוזר למשתמש בשעה · $3 ביום לכל המערכת · תמונה עד 5MB · 20 הודעות היסטוריה לכל תור.
 
-1. Open the URL, enter a name and the password, see an empty chat.
-2. Wrong password is refused.
-3. "What sold best in the last week of August 2026?" streams an answer that names a product and the dates used, after a visible `sales_query` call.
-4. "Revenue by branch for August 2026" gives one number per branch.
-5. Attach a clear invoice photo: one row appears under Invoices with status *logged*.
-6. Attach the same photo again: still one row; the reply says it already exists.
-7. Attach a photo with an unreadable total: a row with status *needs a look* and no amount.
-8. An invoice over ₪5,000 shows the *flag* badge.
-9. "Delete all invoices from March" is refused, with a pointer to Dana.
-10. The 31st message within an hour is refused with a clear message.
-11. `/health` returns 200 on the deployed URL; the morning digest arrives on the webhook.
-12. `pytest` is green, and `python -m evals.run` passes at least 80% of the cases (CI's `--baseline 0.8`).
+## 6. "גמור" – בדיקות שכל אחד יכול להריץ
+
+1. כניסה עם שם וסיסמה; סיסמה שגויה נדחית.
+2. סקירה: 6 כרטיסים, לחיצה על כרטיס/עמודה עוברת לטבלה מסוננת.
+3. חיפוש `0504821937` ו-`972-50-482` מוצא את אותם שני לידים (מסומנים כפולים).
+4. גרירת ליד ל"נסגר" בלוח → הסטטוס "נסגר" נשמר ומופיע בהיסטוריה.
+5. מענה חכם ל"מוסך הצפון" ("מה המחיר לאתר בסיסי?") → טיוטה שלא ממציאה מחיר ומציעה שיחה.
+6. "שליחה בוואטסאפ" פותח `wa.me` עם הטקסט, והליד יוצא מרשימת הממתינים.
+7. בעוזר: "מה לטפל היום?" → רשימה מתועדפת אחרי קריאה לכלים.
+8. בעוזר: "תוסיף ליד 050-482-1937" → "כבר קיים", לא נוצר כפול.
+9. `/health` מחזיר 200; `pytest` ירוק.
+
+</div>

@@ -1,4 +1,4 @@
-# architecture.md — Bakery Copilot
+# architecture.md — LeadPilot (leads + smart reply)
 
 The drawing, where each box runs, the limits, and every decision with its reason. Keep it current in the same commit as the change.
 
@@ -6,22 +6,25 @@ The drawing, where each box runs, the limits, and every decision with its reason
 
 ```
  Browser (UI)            Backend (FastAPI, one service)              Anthropic
- static/index.html  --->  /api/chat  --> agent loop --------------->  Claude API
+ static/index.html  --->  /api/leads · /api/leads/{id}/smart-reply ->  Claude API
+                    --->  /api/chat  --> agent loop --------------->  (or offline rules)
  app.js, styles.css <---  SSE stream <-- text + tool events          (model, per token)
                              |        \
-                             |         tools: sales_query · lookup_supplier · log_invoice
+                             |         tools: leads_overview · search_leads · get_lead · update_lead · create_lead · list_templates
                              v
                           Postgres (Railway plugin)  <---  cron service: python -m app.digest (07:30)
-                          users · conversations · messages · runs · invoices · suppliers · sales
+                          users · conversations · messages · runs · leads · lead_events · templates
 ```
 
 Four layers, one external dependency. Everything on the left and in the middle is ours and runs on Railway; the model is rented per token.
 
 ## Flows
 
-- **Chat turn.** UI posts `{conversation_id, message, image?}` → auth cookie checked → three limits checked → user message saved → system prompt (with today's date, the data range and the branch names, all read from the data) + last 20 messages + current message → model stream. Text deltas are forwarded to the UI as they arrive. If the model asks for a tool, the backend runs it, appends the result, and calls the model again (max 6 rounds). At the end: one assistant message, one `runs` row with tokens and cost. A dropped connection saves no partial assistant message; the run is marked `aborted`.
-- **Invoice.** The image travels inside the same turn as a content block plus an `image reference` string. The model calls `lookup_supplier`, then `log_invoice` with `source_ref` = that reference. The tool, not the prompt, enforces: duplicate → existing row; unreadable amount → `needs_a_look`; over ₪5,000 → `flagged`.
-- **Digest.** The cron service runs `app/digest.py`: reads yesterday's invoices and runs, prints six lines, POSTs them to `DIGEST_WEBHOOK_URL` if set. `POST /internal/digest` with `X-Cron-Secret` does the same by hand.
+- **Chat turn.** UI posts `{conversation_id, message, image?}` → auth cookie checked → three limits checked → user message saved → system prompt (business name, today's date, lead count) + last 20 messages + current message → model stream. Text deltas are forwarded to the UI as they arrive. If the model asks for a tool, the backend runs it, appends the result, and calls the model again (max 6 rounds). At the end: one assistant message, one `runs` row with tokens and cost. A dropped connection saves no partial assistant message; the run is marked `aborted`.
+- **Dashboard.** `GET /api/leads` returns every lead with server-computed flags (stage, hot, stale, needs_reply, duplicate); the UI filters, sorts and draws charts client-side. `PATCH /api/leads/{id}` changes only the fields sent and writes a `lead_events` row per change. Kanban drops send the stage's default status.
+- **Smart reply.** `POST /api/leads/{id}/smart-reply` sends the lead card + the lead's last message to one tool-less model call (`prompts/smart_reply.md`), which returns JSON: reply, intent, suggested status, summary. Bad output or a model error falls back to the rule engine, so the rep always gets a draft. `POST /api/leads/{id}/sent` marks it answered and applies the status. Every call writes a `runs` row (cost cap).
+- **Offline mode.** No `ANTHROPIC_API_KEY` → `MODEL_PROVIDER=offline`: `app/offline.py` speaks the same ModelClient protocol with keyword intents mapped to the same tools, and smart replies come from `smart_reply.rules_reply`. A fresh deploy is usable before a key exists.
+- **Digest.** The cron service runs `app/digest.py`: new leads yesterday, hot, waiting for a reply, stale, AI spend; POSTs to `DIGEST_WEBHOOK_URL` if set.
 
 ## Storage
 
@@ -33,9 +36,9 @@ Postgres on Railway (`DATABASE_URL` from the plugin); SQLite locally and in test
 | conversations | id | belongs to one user; title = first message |
 | messages | id | role, text only; `has_image` flag; image bytes are never stored |
 | runs | id | one per model turn: tokens, cost_usd, tool_calls, status, duration |
-| invoices | `source_ref` (unique) · (supplier, invoice_number) | the dedup keys; status logged / needs_a_look; flagged |
-| suppliers | id | seeded from data/suppliers.csv |
-| sales | id | seeded from data/bakery_sales.csv; read-only through `sales_query` |
+| leads | id · `phone_norm` (indexed) | phone normalised to 972…; status id or null; three follow-up texts; `last_incoming` + `replied` drive the reply inbox. Seeded from data/leads.json with relative dates |
+| lead_events | id · lead_id | activity log: created, status, edit, note, incoming, ai_reply |
+| templates | id | WhatsApp templates by lead type; seeded from data/templates.json |
 | schema_version | version | 1; created with `create_all` at start |
 
 ## Model
@@ -72,8 +75,8 @@ One Railway project, three things in it: the **web service**, built by Railway's
 |---|---|---|---|
 | 2026-10-17 | One service serves UI and API | Ten users; a CDN or a second service is cost and a second deploy for nothing | Traffic from the public web, or a separate frontend team |
 | 2026-10-17 | Postgres over Airtable | Chat history grows fast; Airtable's record cap and rate limit would be hit within weeks | Non-developers must edit rows by hand daily |
-| 2026-10-17 | Structured `sales_query` tool, no SQL from the model | Least access: the model cannot read or change anything but sales; testable | A genuine need for ad-hoc analysis the parameters cannot express |
-| 2026-10-17 | Images not stored | Cheaper, smaller database, fewer privacy questions; the row is the record | A requirement to show the original invoice later |
+| 2026-10-17 | Structured tools, no SQL from the model | Least access: the model can read leads and change only status / notes / last update, or create a deduplicated lead; it cannot delete | A genuine need for ad-hoc analysis the parameters cannot express |
+| 2026-10-17 | Images not stored | Cheaper, smaller database, fewer privacy questions; the row is the record | A requirement to show the original screenshot later |
 | 2026-10-17 | Shared password + typed name, not accounts | One business, ten people, no admin; per-user limits still work | A second client, or a client who wants per-person access control |
 | 2026-10-17 | `create_all` + schema_version, no migration tool yet | Schema v1 has no history to migrate; keep the dependency list short | The first schema change after production data exists → add Alembic |
 | 2026-10-17 | Digest as a Railway cron service, not an external pinger | Same repo, same variables, runs for seconds, costs cents | Railway removes cron, or the digest needs to run in several regions |
@@ -81,3 +84,7 @@ One Railway project, three things in it: the **web service**, built by Railway's
 | 2026-10-27 | Infrastructure as Code (`.railway/railway.ts`) instead of `railway.json` | Railway deprecated config-as-code files (they stop working on 2026-12-01); one IaC file describes both services, so the cron service needs no config path of its own | Railway changes the IaC format again, or a setting the DSL cannot express |
 | 2026-11-04 | Chat history is resent as text only; the system prompt says earlier replies were tool-checked and must not be re-checked or retracted unasked | The first live chats showed the model, seeing its old figures without the tool calls behind them, re-running tools on unrelated turns and telling users their searches "never ran" (issue #2). A prompt rule fixes it with no schema change | The eval `no_recheck_after_off_topic` regresses → store a compact tool trace per message and replay it (a schema change, so add Alembic first) |
 | 2026-10-28 | Public repository, history restarted as one commit | No secrets live in the code (they are in Variables) and the dataset is mock data; a fresh history keeps the owner's personal email out, and the old private repo is kept as `bakery-copilot-archive` | Real client data or client-specific configuration has to be committed |
+| 2026-11-08 | Domain changed from bakery sales to leads + smart reply; UI rewritten in the leads-dashboard design (Hebrew RTL, same tokens) as plain HTML/CSS/JS | Keeps one service and no build step on Railway, while matching the reference look | The UI grows past what one script can hold → move to Vite + React like the reference |
+| 2026-11-08 | Statuses/stages defined once in `app/leads_meta.py` and served to the UI via `/api/meta` | One source of truth for labels, tones, next actions and templates | Statuses must be editable by the business without a deploy |
+| 2026-11-08 | Offline rule engine when no API key | The app is demonstrable and useful from the first deploy; the key is a switch, not a requirement | Rules start giving answers worse than "no answer" |
+| 2026-11-08 | Smart reply is a separate one-shot JSON call, not an agent turn | Faster and cheaper (no tools, short output), easy to validate and to fall back from | Replies need data from other leads or tools |

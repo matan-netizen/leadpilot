@@ -1,74 +1,100 @@
-"""Unit tests: the deterministic parts. Same input, same output, every time."""
+"""Unit tests: phone rules, flags, metrics and the lead tools. Deterministic, no model."""
+import json
+from datetime import timedelta
+
 import pytest
 
-from app.tools.invoices import log_invoice, lookup_supplier, parse_amount
-from app.tools.sales import sales_query
+from app.db import Lead, LeadEvent, utcnow
+from app.leads_meta import compute_metrics, format_phone, is_hot, is_stale, normalize_phone, stage_of
+from app.tools import registry
+from app.tools.leads import create_lead, get_lead, leads_overview, search_leads, update_lead
 
 
-@pytest.mark.parametrize("raw,expected", [
-    ("₪1,240.00", 1240.0), ("1 240", 1240.0), ("NIS 85", 85.0), (1240, 1240.0), (99.5, 99.5),
-    ("TBD", None), ("", None), (None, None), ("-20", None), ("call us", None),
+@pytest.mark.parametrize("raw,norm", [
+    ("050-482-1937", "972504821937"), ("972 50-482-1937", "972504821937"), ("+972-0504821937", "972504821937"),
+    ("504821937", "972504821937"), ("03-612-4478", "97236124478"), ("436609622344", "436609622344"), ("", ""),
 ])
-def test_parse_amount(raw, expected):
-    assert parse_amount(raw) == expected
+def test_normalize_phone(raw, norm):
+    assert normalize_phone(raw) == norm
 
 
-def test_log_invoice_same_source_ref_is_one_row(client, db):
-    first = log_invoice(db, supplier="Levi Flour", invoice_number="A-1", amount=1240, source_ref="img_t1")
-    second = log_invoice(db, supplier="Levi Flour", invoice_number="A-1", amount=1240, source_ref="img_t1")
+def test_format_phone():
+    assert format_phone("972504821937") == "050-482-1937"
+    assert format_phone("97236124478") == "03-612-4478"
+    assert format_phone("436609622344") == "+436609622344"
+
+
+def _lead(**kw):
+    base = dict(phone="050", phone_norm="972500000000", name="", status=None, first_attempt="", second_attempt="",
+                last_update="", notes="", last_incoming="", replied=True, created_at=utcnow(), updated_at=utcnow())
+    base.update(kw)
+    return Lead(**base)
+
+
+def test_hot_rules():
+    assert is_hot(_lead(status="callback"))
+    assert is_hot(_lead(status="sent_intro", notes="ליד חם!"))
+    assert not is_hot(_lead(status="sent_intro", notes="חמישי בבוקר"))  # "חם" only as a whole word
+    assert not is_hot(_lead(status="closed", notes="מאוד מעוניין"))  # won leads are not "hot"
+
+
+def test_stale_only_for_active_stages():
+    old = utcnow() - timedelta(days=5)
+    assert is_stale(_lead(status="info_sent", updated_at=old), utcnow())
+    assert not is_stale(_lead(status="no_response", updated_at=old), utcnow())
+    assert stage_of(None) == "new" and stage_of("unknown") == "new"
+
+
+def test_metrics_counts_duplicates_and_rates():
+    leads = [_lead(id=1, status="closed", phone_norm="972500000008"), _lead(id=2, status="not_interested", phone_norm="972500000009"), _lead(id=3, phone_norm="972500000001"),
+             _lead(id=4, status="sent_intro", phone_norm="972500000001")]
+    m = compute_metrics(leads, utcnow())
+    assert m["total"] == 4 and m["won"] == 1 and m["lost"] == 1
+    assert m["conversion_rate"] == 0.25 and m["win_rate"] == 0.5
+    assert m["no_status"] == 1 and list(m["duplicates"].values()) == [[3, 4]]
+
+
+def test_seed_loaded(client, db):
+    o = leads_overview(db)
+    assert o["total"] >= 32 and o["waiting_reply"] >= 1
+    assert "050-482-1937" in o["duplicates"]  # the seed has one deliberate duplicate pair
+
+
+def test_search_by_phone_in_any_format(client, db):
+    for q in ("0504821937", "972-50-482", "482-1937"):
+        r = search_leads(db, query=q)
+        assert r["count"] >= 1, q
+        assert all(l["phone_display"] == "050-482-1937" for l in r["leads"])
+
+
+def test_search_filters(client, db):
+    hot = search_leads(db, hot_only=True, limit=50)
+    assert hot["count"] > 0 and all(l["hot"] for l in hot["leads"])
+    waiting = search_leads(db, needs_reply_only=True, limit=50)
+    assert all(l["needs_reply"] for l in waiting["leads"])
+    assert search_leads(db, stage="nope")["error"].startswith("unknown stage")
+
+
+def test_create_lead_dedups_by_normalised_phone(client, db):
+    first = create_lead(db, phone="058-111-2233", name="בדיקה")
+    again = create_lead(db, phone="+972 58 111 2233")
     assert first["created"] is True
-    assert second["created"] is False and second["reason"] == "duplicate"
-    assert second["id"] == first["id"]
+    assert again == {"created": False, "reason": "duplicate", "id": first["id"], "name": "בדיקה"}
+    assert create_lead(db, phone="12")["error"] == "phone number looks invalid"
 
 
-def test_log_invoice_same_supplier_and_number_is_one_row(client, db):
-    a = log_invoice(db, supplier="Golan Dairy", invoice_number="7781", amount=500, source_ref="img_t2a")
-    b = log_invoice(db, supplier="golan dairy", invoice_number="7781", amount=500, source_ref="img_t2b")
-    assert b["created"] is False and b["id"] == a["id"]
+def test_update_lead_logs_activity(client, db):
+    lid = create_lead(db, phone="058-111-9999", name="עדכון")["id"]
+    r = update_lead(db, lead_id=lid, status="offer_sent", append_note="נשלחה הצעה")
+    assert r["updated"] == ["status", "notes"]
+    kinds = [e.kind for e in db.query(LeadEvent).filter_by(lead_id=lid).all()]
+    assert kinds == ["created", "status", "note"]
+    assert update_lead(db, lead_id=lid, status="bad")["error"].startswith("unknown status")
+    card = get_lead(db, lead_id=lid)
+    assert card["stage"] == "closing" and card["recommended_template"]["lead_type"] == "לקראת סגירה"
 
 
-def test_unreadable_amount_goes_to_needs_a_look(client, db):
-    row = log_invoice(db, supplier="Negev Eggs", invoice_number="9", amount=None, source_ref="img_t3")
-    assert row["status"] == "needs_a_look"
-    assert row["amount"] is None
-    assert "amount unreadable" in (row["notes"] or "")
-
-
-def test_large_amount_is_flagged_not_blocked(client, db):
-    row = log_invoice(db, supplier="Big Oven Ltd", invoice_number="X1", amount="₪6,200", source_ref="img_t4")
-    assert row["status"] == "logged" and row["flagged"] is True and row["amount"] == 6200.0
-
-
-def test_lookup_supplier_partial_match(client, db):
-    res = lookup_supplier(db, name="vanilla")
-    assert res["known_supplier"] is True
-    assert any("Vanilla" in m["supplier"] for m in res["matches"])
-    assert lookup_supplier(db, name="nobody-here")["known_supplier"] is False
-
-
-def test_sales_query_totals_match_the_dataset(client, db):
-    # The Lesson 4/5 dataset: completed revenue ₪647,065 · 40,194 items · 14,196 completed orders
-    # (14,421 orders in total once refunded lines are included).
-    res = sales_query(db, metric="revenue", group_by="none")
-    assert round(res["revenue"]) == 647065
-    assert res["items"] == 40194
-    assert res["orders"] == 14196
-    everything = sales_query(db, metric="orders", group_by="none", include_refunded=True)
-    assert everything["orders"] == 14421
-
-
-def test_branch_names_are_cleaned_at_the_door(client, db):
-    # The CSV has "Herzliya " with a trailing space; the seed strips it, so there are exactly four branches.
-    res = sales_query(db, metric="revenue", group_by="branch", include_refunded=True)
-    assert res["row_count"] == 4
-    assert sorted(r["key"] for r in res["rows"]) == ["Herzliya", "Ramat Gan", "Tel Aviv - Dizengoff", "Tel Aviv - Florentin"]
-
-
-def test_sales_query_ranking_and_filters(client, db):
-    top = sales_query(db, metric="items", group_by="product", top_n=3)
-    assert top["row_count"] == 3
-    assert top["rows"][0]["value"] >= top["rows"][1]["value"] >= top["rows"][2]["value"]
-    month = sales_query(db, metric="revenue", group_by="branch", date_from="2026-08-01", date_to="2026-08-31")
-    assert 0 < month["row_count"] <= 4
-    assert sales_query(db, metric="nope", group_by="none")["error"].startswith("unknown metric")
-    assert sales_query(db, metric="revenue", group_by="none", date_from="31/08/2026")["error"] == "dates must be YYYY-MM-DD"
+def test_registry_survives_bad_input(client, db):
+    out = json.loads(registry.execute("get_lead", {"lead_id": 999999}, db))
+    assert "error" in out
+    assert "unknown tool" in json.loads(registry.execute("drop_table", {}, db))["error"]

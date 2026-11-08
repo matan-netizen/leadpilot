@@ -1,4 +1,4 @@
-"""Database layer: models, engine, session, startup migration and seeding.
+"""Database layer (Leads Copilot): models, engine, session, startup migration and seeding.
 
 Postgres on Railway (DATABASE_URL from the plugin) or SQLite locally. The
 schema is created at start with `create_all`; `schema_version` records which
@@ -6,13 +6,12 @@ version is live so a later real migration tool has somewhere to start.
 """
 from __future__ import annotations
 
-import csv
-from datetime import date, datetime, timezone
+import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sqlalchemy import (
     Boolean,
-    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -94,50 +93,49 @@ class Run(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
 
 
-class Supplier(Base):
-    __tablename__ = "suppliers"
+class Lead(Base):
+    """One lead: a phone number, three free-text follow-up fields, a status and notes (the reference sheet's columns)."""
+
+    __tablename__ = "leads"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    name: Mapped[str] = mapped_column(String(120), index=True)
-    item: Mapped[str] = mapped_column(String(120))
-    unit: Mapped[str] = mapped_column(String(20))
-    price: Mapped[float] = mapped_column(Float)
-    currency: Mapped[str] = mapped_column(String(3))
+    phone: Mapped[str] = mapped_column(String(40))
+    phone_norm: Mapped[str] = mapped_column(String(20), index=True)
+    name: Mapped[str] = mapped_column(String(80), default="")
+    source: Mapped[str] = mapped_column(String(30), default="")
+    status: Mapped[str | None] = mapped_column(String(30), nullable=True, index=True)
+    first_attempt: Mapped[str] = mapped_column(Text, default="")
+    second_attempt: Mapped[str] = mapped_column(Text, default="")
+    last_update: Mapped[str] = mapped_column(Text, default="")
+    notes: Mapped[str] = mapped_column(Text, default="")
+    last_incoming: Mapped[str] = mapped_column(Text, default="")  # the latest message the lead sent us
+    replied: Mapped[bool] = mapped_column(Boolean, default=True)  # False while last_incoming waits for an answer
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
-class Invoice(Base):
-    __tablename__ = "invoices"
+class LeadEvent(Base):
+    """The activity log of a lead: created, status changes, notes, smart replies sent."""
+
+    __tablename__ = "lead_events"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    supplier: Mapped[str] = mapped_column(String(120), index=True)
-    invoice_number: Mapped[str | None] = mapped_column(String(60), nullable=True, index=True)
-    amount: Mapped[float | None] = mapped_column(Float, nullable=True)
-    currency: Mapped[str] = mapped_column(String(3), default="ILS")
-    invoice_date: Mapped[date | None] = mapped_column(Date, nullable=True)
-    status: Mapped[str] = mapped_column(String(20), default="logged")  # logged | needs_a_look
-    flagged: Mapped[bool] = mapped_column(Boolean, default=False)  # over the spec threshold
-    source_ref: Mapped[str | None] = mapped_column(String(120), nullable=True, unique=True)  # the dedup key
-    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
-    logged_by: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    lead_id: Mapped[int] = mapped_column(ForeignKey("leads.id"), index=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    actor: Mapped[str] = mapped_column(String(40), default="")
+    kind: Mapped[str] = mapped_column(String(20))  # created | status | edit | note | ai_reply | incoming
+    text: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
 
 
-class Sale(Base):
-    """One line of the Lesson 4 bakery dataset (29,115 rows, Sep 2025 to Aug 2026)."""
+class Template(Base):
+    """A WhatsApp message template, by lead type (read-only reference)."""
 
-    __tablename__ = "sales"
+    __tablename__ = "templates"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    order_id: Mapped[str] = mapped_column(String(20), index=True)
-    order_datetime: Mapped[datetime] = mapped_column(DateTime)
-    order_date: Mapped[date] = mapped_column(Date, index=True)
-    branch: Mapped[str] = mapped_column(String(60), index=True)
-    channel: Mapped[str] = mapped_column(String(30))
-    payment_method: Mapped[str] = mapped_column(String(20))
-    customer_type: Mapped[str] = mapped_column(String(20))
-    product: Mapped[str] = mapped_column(String(60), index=True)
-    category: Mapped[str] = mapped_column(String(30))
-    quantity: Mapped[int] = mapped_column(Integer)
-    unit_price: Mapped[float] = mapped_column(Float)
-    line_total: Mapped[float] = mapped_column(Float)
-    status: Mapped[str] = mapped_column(String(12), index=True)  # completed | refunded
+    lead_type: Mapped[str] = mapped_column(String(60), index=True)
+    goal: Mapped[str] = mapped_column(Text, default="")
+    stage_a: Mapped[str] = mapped_column(Text, default="")
+    stage_b: Mapped[str] = mapped_column(Text, default="")
+    extra: Mapped[str] = mapped_column(Text, default="")
 
 
 # ---------------------------------------------------------------------------
@@ -169,57 +167,52 @@ def get_db():
 # ---------------------------------------------------------------------------
 
 def init_db(bind=None, data_dir: Path | None = None) -> dict:
-    """Create tables, record the schema version, seed reference data if empty."""
+    """Create tables, record the schema version, seed demo leads and templates if empty."""
     bind = bind or engine
     data_dir = data_dir or (ROOT / "data")
     Base.metadata.create_all(bind)
-    report = {"schema_version": SCHEMA_VERSION, "suppliers_seeded": 0, "sales_seeded": 0}
+    report = {"schema_version": SCHEMA_VERSION, "templates_seeded": 0, "leads_seeded": 0}
     with Session(bind) as db:
         if db.scalar(select(func.count()).select_from(SchemaVersion)) == 0:
             db.add(SchemaVersion(version=SCHEMA_VERSION))
             db.commit()
-        if db.scalar(select(func.count()).select_from(Supplier)) == 0:
-            report["suppliers_seeded"] = _seed_suppliers(db, data_dir / "suppliers.csv")
-        if db.scalar(select(func.count()).select_from(Sale)) == 0:
-            report["sales_seeded"] = _seed_sales(db, data_dir / "bakery_sales.csv")
+        if db.scalar(select(func.count()).select_from(Template)) == 0:
+            report["templates_seeded"] = _seed_templates(db, data_dir / "templates.json")
+        if db.scalar(select(func.count()).select_from(Lead)) == 0:
+            report["leads_seeded"] = _seed_leads(db, data_dir / "leads.json")
     return report
 
 
-def _seed_suppliers(db: Session, path: Path) -> int:
+def _seed_templates(db: Session, path: Path) -> int:
     if not path.exists():
         return 0
-    rows = []
-    with path.open(encoding="utf-8") as f:
-        for r in csv.DictReader(f):
-            rows.append(Supplier(name=r["supplier"].strip(), item=r["item"].strip(), unit=r["unit"].strip(),
-                                 price=float(r["price"]), currency=r["currency"].strip().upper()))
+    rows = [Template(lead_type=r["lead_type"], goal=r.get("goal", ""), stage_a=r.get("stage_a", ""),
+                     stage_b=r.get("stage_b", ""), extra=r.get("extra", "")) for r in json.loads(path.read_text("utf-8"))]
     db.add_all(rows)
     db.commit()
     return len(rows)
 
 
-def _seed_sales(db: Session, path: Path, chunk: int = 2000) -> int:
+def _seed_leads(db: Session, path: Path) -> int:
+    """Demo leads. Dates are relative (days_ago) so "stale" and "today" stay meaningful on any day."""
+    from .leads_meta import normalize_phone
+
     if not path.exists():
         return 0
-    total = 0
-    batch: list[dict] = []
-    with path.open(encoding="utf-8") as f:
-        for r in csv.DictReader(f):
-            dt = datetime.strptime(r["order_datetime"], "%Y-%m-%d %H:%M")
-            # Clean at the door (Lesson 5): the source file has a "Herzliya " variant with a trailing space.
-            batch.append({
-                "order_id": r["order_id"].strip(), "order_datetime": dt, "order_date": dt.date(),
-                "branch": r["branch"].strip(), "channel": r["channel"].strip(), "payment_method": r["payment_method"].strip(),
-                "customer_type": r["customer_type"].strip(), "product": r["product"].strip(), "category": r["category"].strip(),
-                "quantity": int(r["quantity"]), "unit_price": float(r["unit_price"]),
-                "line_total": float(r["line_total"]), "status": r["status"],
-            })
-            if len(batch) >= chunk:
-                db.execute(Sale.__table__.insert(), batch)
-                total += len(batch)
-                batch = []
-    if batch:
-        db.execute(Sale.__table__.insert(), batch)
-        total += len(batch)
+    now = utcnow()
+    count = 0
+    for r in json.loads(path.read_text("utf-8")):
+        created = now - timedelta(days=r.get("days_ago", 0), hours=r.get("hours_ago", 0))
+        updated = now - timedelta(days=r.get("updated_days_ago", r.get("days_ago", 0)), hours=r.get("hours_ago", 0))
+        lead = Lead(phone=r["phone"], phone_norm=normalize_phone(r["phone"]), name=r.get("name", ""), source=r.get("source", ""),
+                    status=r.get("status"), first_attempt=r.get("first_attempt", ""), second_attempt=r.get("second_attempt", ""),
+                    last_update=r.get("last_update", ""), notes=r.get("notes", ""), last_incoming=r.get("last_incoming", ""),
+                    replied=not r.get("last_incoming"), created_at=created, updated_at=updated)
+        db.add(lead)
+        db.flush()
+        db.add(LeadEvent(lead_id=lead.id, actor="מערכת", kind="created", text=f"ליד נוצר ממקור: {lead.source or 'לא ידוע'}", created_at=created))
+        if lead.last_incoming:
+            db.add(LeadEvent(lead_id=lead.id, actor=lead.name or "הליד", kind="incoming", text=lead.last_incoming, created_at=updated))
+        count += 1
     db.commit()
-    return total
+    return count
