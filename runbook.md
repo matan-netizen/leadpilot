@@ -11,7 +11,7 @@ Written while everything works. Each entry is a sequence: click here, run this, 
 ## Model errors (replies fail with "try again in a minute")
 
 1. Check `https://status.anthropic.com`. If there is an incident, wait; the SDK already retries 429/529.
-2. Check the day cap: `GET /api/stats` (signed in). If `spend_today_usd ≥ daily_cap_usd`, the app is doing its job; raise `DAILY_CAP_USD` in Variables only if Dana agrees to the cost.
+2. Check the day cap: `GET /api/stats` (signed in). If `spend_today_usd ≥ daily_cap_usd`, the app is doing its job; raise `DAILY_CAP_USD` in Variables only if the business owner agrees to the cost.
 3. Check the key: `/health` says `ANTHROPIC_API_KEY missing` if the variable was lost. Set it in Variables and redeploy.
 4. Look at the `runs` table for `status = 'error'` and the `error` column.
 
@@ -43,5 +43,5 @@ Written while everything works. Each entry is a sequence: click here, run this, 
 
 ## Who to call
 
-- You (the implementer), then Dana (owner, decides on cost and data).
+- You (the implementer), then the business owner (decides on cost and data).
 - Railway status: `https://status.railway.com` · Anthropic status: `https://status.anthropic.com`.

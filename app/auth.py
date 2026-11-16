@@ -6,8 +6,8 @@ own name, which becomes their user row for history and rate limits.
 from __future__ import annotations
 
 import base64
-import hmac
 import hashlib
+import hmac
 import re
 import time
 

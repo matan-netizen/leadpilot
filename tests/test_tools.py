@@ -46,7 +46,8 @@ def test_stale_only_for_active_stages():
 
 
 def test_metrics_counts_duplicates_and_rates():
-    leads = [_lead(id=1, status="closed", phone_norm="972500000008"), _lead(id=2, status="not_interested", phone_norm="972500000009"), _lead(id=3, phone_norm="972500000001"),
+    leads = [_lead(id=1, status="closed", phone_norm="972500000008"), _lead(id=2, status="not_interested", phone_norm="972500000009"),
+             _lead(id=3, phone_norm="972500000001"),
              _lead(id=4, status="sent_intro", phone_norm="972500000001")]
     m = compute_metrics(leads, utcnow())
     assert m["total"] == 4 and m["won"] == 1 and m["lost"] == 1
@@ -64,14 +65,14 @@ def test_search_by_phone_in_any_format(client, db):
     for q in ("0504821937", "972-50-482", "482-1937"):
         r = search_leads(db, query=q)
         assert r["count"] >= 1, q
-        assert all(l["phone_display"] == "050-482-1937" for l in r["leads"])
+        assert all(ld["phone_display"] == "050-482-1937" for ld in r["leads"])
 
 
 def test_search_filters(client, db):
     hot = search_leads(db, hot_only=True, limit=50)
-    assert hot["count"] > 0 and all(l["hot"] for l in hot["leads"])
+    assert hot["count"] > 0 and all(ld["hot"] for ld in hot["leads"])
     waiting = search_leads(db, needs_reply_only=True, limit=50)
-    assert all(l["needs_reply"] for l in waiting["leads"])
+    assert all(ld["needs_reply"] for ld in waiting["leads"])
     assert search_leads(db, stage="nope")["error"].startswith("unknown stage")
 
 

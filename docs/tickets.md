@@ -1,53 +1,47 @@
-> Historical: these are the tickets of the original Bakery Copilot. LeadPilot's scope is in spec.md.
+# tickets.md — LeadPilot work plan
 
-# Tickets — Bakery Copilot
+Each ticket has a "Done when" line that a test or a manual check can prove. `scripts/create_issues.sh` turns this list into GitHub Issues with milestones and labels. ✅ = shipped.
 
-The spec broken into tickets a stranger could test, grouped by milestone. Each becomes a GitHub Issue on the project board (To do / In progress / Done). `scripts/create_issues.sh` creates them with `gh` once the repo exists.
+## v1 — Leads dashboard
 
-Format: **title** · label · done when.
+| # | Ticket | Done when | |
+|---|---|---|---|
+| 1 | Leads domain: 12 statuses, 6 stages, phone normalisation | `normalize_phone` passes all formats in `test_tools.py`; stages map 1:1 to statuses | ✅ |
+| 2 | Database: leads, lead_events, templates + demo seed | first start logs `leads_seeded: 32, templates_seeded: 7`; a redeploy logs zeros | ✅ |
+| 3 | Leads REST API (list, get, create, patch) | only sent fields change; every change writes a `lead_events` row; duplicate phone → 409 | ✅ |
+| 4 | Overview: KPI tiles, funnel, status split, "today", data quality | clicking a tile or a bar opens the table with that filter | ✅ |
+| 5 | Leads table: search, filters, sort, CSV | search finds a phone in any format; CSV opens in Excel with Hebrew | ✅ |
+| 6 | Kanban with drag & drop | dropping a card sets the stage's default status and persists | ✅ |
+| 7 | Lead drawer: next action, template, edit form, activity log | Save is enabled only after a change; the log shows who changed what | ✅ |
+| 8 | Hebrew RTL design, dark mode, mobile | no horizontal scroll at 390 px; theme choice survives reload | ✅ |
 
-## Milestone v1 — chat
+## v2 — AI
 
-1. **Project skeleton: FastAPI app, config from env, health endpoint** · chore · `GET /health` returns 200 locally; settings load from `.env`.
-2. **Database models and startup seed** · feature · tables created at start; `sales` has 29,115 rows; `suppliers` has 10.
-3. **Login with team password and typed name** · feature · right password sets a cookie; wrong password 401; name 2–40 chars.
-4. **Conversations list and messages API** · feature · a user sees only their conversations; messages return in order.
-5. **Chat turn with streaming (SSE)** · feature · first token under 2 s on a 3-turn chat; full reply saved once; dropped connection leaves no half-row.
-6. **Static chat UI: sidebar, bubbles, composer** · feature · works on a phone width; Enter sends, Shift+Enter newline.
-7. **Markdown rendering of replies** · feature · lists and tables render; plain text falls back when the CDN is blocked.
-8. **System prompt with today's date and data range** · feature · the prompt names the dataset's first and last dates.
+| # | Ticket | Done when | |
+|---|---|---|---|
+| 9 | Agent tools: overview, search, get, update, create, templates | tool loop test updates a lead through `update_lead` and logs one run | ✅ |
+| 10 | System prompt for the sales assistant | the prompt names the business and today's date; no `{{` left | ✅ |
+| 11 | Smart reply: one-shot JSON call + rules fallback | bad model output still returns a draft; no invented prices (eval) | ✅ |
+| 12 | Reply inbox with send-to-WhatsApp and status apply | "send" marks the lead answered and removes it from the inbox | ✅ |
+| 13 | Offline rules mode when no API key | the app answers "מה לטפל היום?" with tools and no key | ✅ |
+| 14 | Evals for the agent (`evals/cases.yaml`) | `python -m evals.run --baseline 0.8` passes | ✅ |
 
-## Milestone v2 — tools
+## v3 — Production
 
-9. **`sales_query` tool: metric, grouping, filters** · feature · totals match the dataset (₪647,065 · 14,421 orders · 40,194 items); unknown metric returns an error, not an exception.
-10. **`lookup_supplier` tool** · feature · partial, case-insensitive match; unknown name returns `known_supplier: false`.
-11. **`log_invoice` tool with dedup, needs-a-look and flag rules** · feature · same `source_ref` twice is one row; null amount → `needs_a_look`; > ₪5,000 → `flagged`.
-12. **Tool loop in the agent (max 6 rounds), tool events to the UI** · feature · the UI shows a chip per tool call; the run row counts tool calls.
-13. **Image upload: base64 in the turn, reference string, not stored** · feature · a PNG under 5 MB reaches the model; the saved message has `has_image`.
-14. **Invoices panel in the UI** · feature · last 50 invoices with status and flag badges.
-15. **Eval cases and runner** · chore · `python -m evals.run` grades 10 cases and appends to `history.csv`.
+| # | Ticket | Done when | |
+|---|---|---|---|
+| 15 | Deploy on Railway: web + Postgres + health check | `/health` 200 on the public URL; data survives a redeploy | ✅ |
+| 16 | Limits: per-user hourly, daily $ cap, upload size | 31st message → 429; cap reached → 402 | ✅ |
+| 17 | Wrong-password message on login (lecturer feedback) | wrong password shows "סיסמה שגויה." and not "יש להתחבר" | ✅ |
+| 18 | Explain every error with its source (payment / settings / Anthropic / bug) | each error class in `test_degraded.py` names its source; no raw JSON reaches the UI | ✅ |
+| 19 | CI: lint + tests on every push, evals on PRs | the badge in README is green | ✅ |
 
-## Milestone v3 — limits and deploy
+## Next
 
-16. **Per-user hourly rate limit** · feature · the 31st message in an hour returns 429 with a clear message.
-17. **Daily spend cap from the runs table** · feature · at the cap the chat returns 402 "back tomorrow".
-18. **Cost per run from a price table** · feature · `cost_usd` on every run; unknown model costs 0 and logs a warning.
-19. **Dockerfile, railway.json, health check** · chore · the service builds on Railway and passes `/health`.
-20. **Morning digest: CLI + protected endpoint** · feature · six lines; wrong `X-Cron-Secret` is 401; webhook POST when configured.
-21. **CI: tests on every PR, evals when the key is present** · chore · a failing test blocks the merge; evals skip cleanly without a key.
-22. **Runbook and first-week watch table** · chore · `runbook.md` has six entries; a `docs/watch.md` table with the six Friday numbers.
-23. **Infrastructure as Code: `.railway/railway.ts` replaces `railway.json`** · chore · `railway config plan` reports no drift; the digest service has start command `python -m app.digest` and schedule `30 4 * * *`; no `railway.json` or `railway.cron.json` in the repo.
-24. **Deploy guide: `docs/deploy-railway.md`** · chore · one document covers the first deploy with the CLI, every variable and secret with where it is set, the dashboard path, day-two operations and troubleshooting; README links to it.
-25. **Session token survives a '|' byte in the signature** · bug · a token reads back for 1,000 consecutive seconds; `pytest -q` is green 20 runs in a row.
-26. **Windows instructions** · chore · README, `practice.md` and `docs/deploy-railway.md` give PowerShell commands wherever Windows differs from macOS and Linux; shell scripts keep LF line endings on Windows checkouts (`.gitattributes`).
-27. **.env loader drops inline comments** · bug · a copy of `.env.example` loads with `load_settings()`; a quoted value keeps a `#`.
-28. **Public repository** · chore · the history is one commit under GitHub's noreply address; no personal email, live URL or workspace name in any tracked file; Railway deploys from the new repo.
-30. **Assistant stops re-checking and retracting answers it already checked (issue #2)** · bug · eval cases can carry earlier turns (`history`); `no_recheck_after_off_topic` and `no_false_retraction` pass; `no_number_without_tool` still passes; `pytest -q` is green.
-31. **System prompt names the branches; the assistant stops inventing them (issue #3)** · bug · `build_system()` output contains the four branch names from the data; the eval `no_invented_branch` passes; `pytest -q` is green.
-32. **Deploy guide checks that work: seed report in the log, SSH key for the private database (issue #4)** · bug · startup prints `seed report: … sales_seeded: N` (tested); `docs/deploy-railway.md` gets from no SSH key to a row count with each command listed, and no longer says a local `railway run` can read the database.
-
-## Later (not scheduled)
-
-- Alembic migrations once production data exists.
-- Conversation purge at 90 days.
-- Per-client deployment template (second bakery).
+| # | Ticket | Done when |
+|---|---|---|
+| 20 | Morning digest as a Railway cron service | the digest arrives on the webhook at 07:30 |
+| 21 | Import leads from CSV / Airtable | a CSV with 100 rows imports with duplicates reported, not created |
+| 22 | WhatsApp Business API: receive messages into the reply inbox | an incoming WhatsApp message appears in "ממתינים למענה" within a minute |
+| 23 | Per-user roles (owner / rep) | a rep cannot change the daily cap or delete data |
+| 24 | Alembic migrations | the first schema change after go-live runs as a migration |

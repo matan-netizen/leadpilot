@@ -20,7 +20,7 @@ import os
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import yaml
@@ -65,7 +65,7 @@ def run_case(case: dict, client) -> dict:
     Base.metadata.drop_all(engine)
     init_db()
     with SessionLocal() as db:
-        before = {l.id: (l.status, l.notes, l.last_update) for l in db.query(Lead).all()}
+        before = {ld.id: (ld.status, ld.notes, ld.last_update) for ld in db.query(Lead).all()}
         user = db.query(User).filter_by(name="eval").one_or_none() or User(name="eval")
         if user.id is None:
             db.add(user)
@@ -84,8 +84,8 @@ def run_case(case: dict, client) -> dict:
                 status = "error"
                 text_parts.append(f"[error: {ev['message']}]")
         db.expire_all()
-        leads = [{"id": l.id, "name": l.name, "status": l.status, "notes": l.notes} for l in db.query(Lead).all()]
-        changed = [l for l in leads if l["id"] not in before or before[l["id"]] != (l["status"], l["notes"], db.get(Lead, l["id"]).last_update)]
+        leads = [{"id": ld.id, "name": ld.name, "status": ld.status, "notes": ld.notes} for ld in db.query(Lead).all()]
+        changed = [ld for ld in leads if ld["id"] not in before or before[ld["id"]] != (ld["status"], ld["notes"], db.get(Lead, ld["id"]).last_update)]
     return {"answer": "".join(text_parts), "tools": tools, "leads": leads, "changed": changed, "usage": usage, "cost": cost, "status": status}
 
 
@@ -106,10 +106,10 @@ def grade_facts(case: dict, result: dict) -> list[str]:
     if exp.get("tools_called_any") and not any(t in result["tools"] for t in exp["tools_called_any"]):
         failures.append(f"expected one of {exp['tools_called_any']} to be called")
     if exp.get("no_lead_changes") and result["changed"]:
-        failures.append(f"leads were changed: {[l['name'] for l in result['changed']]}")
+        failures.append(f"leads were changed: {[ld['name'] for ld in result['changed']]}")
     if "lead" in exp:
         want = exp["lead"]
-        row = next((l for l in result["leads"] if l["name"] == want["name"]), None)
+        row = next((ld for ld in result["leads"] if ld["name"] == want["name"]), None)
         if row is None:
             failures.append(f"no lead named {want['name']!r}")
         elif "status" in want and row["status"] != want["status"]:
@@ -125,7 +125,7 @@ def grade_wording(case: dict, result: dict, judge_model: str) -> str | None:
 
     client = anthropic.Anthropic()
     earlier = "".join(f"{t['role'].capitalize()}: {t['content']}\n\n" for t in case.get("history", []))
-    prompt = (f"You grade an assistant's reply against a rubric. Reply with PASS or FAIL and one short reason.\n\n"
+    prompt = ("You grade an assistant's reply against a rubric. Reply with PASS or FAIL and one short reason.\n\n"
               + (f"Earlier in the conversation:\n\n{earlier}" if earlier else "")
               + f"User asked: {case['input']}\n\nAssistant replied:\n{result['answer']}\n\nRubric: {case['rubric']}")
     msg = client.messages.create(model=judge_model, max_tokens=100, messages=[{"role": "user", "content": prompt}])
@@ -157,7 +157,7 @@ def main() -> int:
     cost = 0.0
     out_dir = HERE / "out"
     out_dir.mkdir(exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
     details = []
     for case in cases:
         for n in range(args.runs):

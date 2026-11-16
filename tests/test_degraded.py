@@ -41,7 +41,7 @@ def test_account_problem_is_recognised():
 def test_chat_falls_back_to_rules_without_credit(client, logged_in):
     c = NoCreditClient()
     with SessionLocal() as s:
-        user = s.query(User).filter_by(name="Dana").one()
+        user = s.query(User).filter_by(name="Tester").one()
         events = list(run_turn(s, user=user, conversation=None, text="מה לטפל היום?", image=None, client=c))
     text = "".join(e["text"] for e in events if e["type"] == "text")
     assert "קרדיט" in text and "זו לא תקלה במערכת" in text and "חמים לטיפול" in text  # explained once, then answered
@@ -49,7 +49,7 @@ def test_chat_falls_back_to_rules_without_credit(client, logged_in):
     assert c.api_calls == 1  # the tool round after the fallback did not hit the API again
 
     with SessionLocal() as s:  # the next turn, within 5 minutes, goes straight to rules mode
-        user = s.query(User).filter_by(name="Dana").one()
+        user = s.query(User).filter_by(name="Tester").one()
         list(run_turn(s, user=user, conversation=None, text="כמה לידים יש?", image=None, client=c))
     assert c.api_calls == 1
 
@@ -71,7 +71,7 @@ def test_status_badge_reports_the_reason(client, logged_in):
     c.last_error = None
     assert c.status() == {"ok": True}
     with SessionLocal() as s:
-        user = s.query(User).filter_by(name="Dana").one()
+        user = s.query(User).filter_by(name="Tester").one()
         list(run_turn(s, user=user, conversation=None, text="כמה לידים יש?", image=None, client=c))
     st = c.status()
     assert st["ok"] is False and st["code"] == "no_credit" and st["source"] == "תשלום"
@@ -79,6 +79,7 @@ def test_status_badge_reports_the_reason(client, logged_in):
 
 def test_every_error_names_its_source():
     import httpx
+
     from app.errors import explain
 
     req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")

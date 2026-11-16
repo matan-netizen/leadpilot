@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import FileResponse, StreamingResponse
@@ -16,13 +16,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from . import auth, limits
+from . import auth, limits, smart_reply
 from .agent import get_model_client, run_turn
 from .config import ROOT, settings
-from . import smart_reply
-from .db import Conversation, Lead, LeadEvent, Message, SessionLocal, engine, get_db, init_db, utcnow
-from .leads_meta import STATUS_BY_ID, compute_metrics, meta, normalize_phone
+from .db import Conversation, Lead, LeadEvent, Message, SessionLocal, get_db, init_db, utcnow
 from .digest import build_digest, send_digest
+from .leads_meta import STATUS_BY_ID, compute_metrics, meta, normalize_phone
 from .tools import leads as lead_tools
 
 
@@ -112,7 +111,7 @@ def health(db: Session = Depends(get_db)):
         problems.append(f"db: {type(exc).__name__}")
     body = {"status": "ok" if not problems else "degraded", "env": settings.environment, "model": settings.model,
             "provider": settings.model_provider, "db": "sqlite" if settings.is_sqlite else "postgres", "problems": problems,
-            "time": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+            "time": datetime.now(UTC).isoformat(timespec="seconds")}
     if problems:
         raise HTTPException(503, body)
     return body
@@ -222,7 +221,7 @@ def get_meta(request: Request, db: Session = Depends(get_db)):
 @app.get("/api/leads")
 def get_leads(request: Request, db: Session = Depends(get_db)):
     auth.current_user(request, db)
-    return {"leads": lead_tools.leads_payload(db), "synced_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
+    return {"leads": lead_tools.leads_payload(db), "synced_at": datetime.now(UTC).isoformat(timespec="seconds")}
 
 
 @app.get("/api/overview")

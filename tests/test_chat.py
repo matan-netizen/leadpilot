@@ -2,7 +2,7 @@
 from app import agent as agent_module
 from app.agent import ModelEvent, run_turn
 from app.costs import Usage
-from app.db import Conversation, Lead, LeadEvent, Message, Run, SessionLocal, User
+from app.db import Lead, LeadEvent, Message, Run, SessionLocal, User
 from tests.conftest import read_sse
 
 
@@ -65,7 +65,7 @@ def test_tool_loop_updates_a_lead(client, db, logged_in, fake):
     assert "status" in tools[1]["summary"]
     db.refresh(lead)
     assert lead.status == "call_scheduled" and "רוצה שיחה" in lead.notes
-    assert db.query(LeadEvent).filter_by(lead_id=lead.id, kind="status", actor="Dana").count() == 1
+    assert db.query(LeadEvent).filter_by(lead_id=lead.id, kind="status", actor="Tester").count() == 1
     run = db.query(Run).filter_by(conversation_id=events[0]["conversation_id"]).one()
     assert run.tool_calls == 1 and run.input_tokens == 720  # both model calls of the turn are summed
 
@@ -85,7 +85,7 @@ def test_dropped_connection_leaves_no_half_row(client, db, logged_in, fake):
         ModelEvent(type="stop", stop_reason="end_turn", usage=Usage(10, 5), content=[{"type": "text", "text": "x"}]),
     ])
     with SessionLocal() as s:
-        user = s.query(User).filter_by(name="Dana").one()
+        user = s.query(User).filter_by(name="Tester").one()
         gen = run_turn(s, user=user, conversation=None, text="cut me off", image=None, client=fake)
         meta = next(gen)
         first = next(gen)

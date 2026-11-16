@@ -6,7 +6,7 @@ written by the chat turns during the day.
 """
 from __future__ import annotations
 
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import UTC, date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import case, func, select
@@ -19,8 +19,8 @@ from .leads_meta import compute_metrics, format_phone, is_hot, needs_reply
 
 def _local_bounds(day: date) -> tuple[datetime, datetime]:
     tz = ZoneInfo(settings.timezone)
-    start = datetime.combine(day, time.min, tzinfo=tz).astimezone(timezone.utc).replace(tzinfo=None)
-    end = datetime.combine(day + timedelta(days=1), time.min, tzinfo=tz).astimezone(timezone.utc).replace(tzinfo=None)
+    start = datetime.combine(day, time.min, tzinfo=tz).astimezone(UTC).replace(tzinfo=None)
+    end = datetime.combine(day + timedelta(days=1), time.min, tzinfo=tz).astimezone(UTC).replace(tzinfo=None)
     return start, end
 
 
@@ -31,9 +31,9 @@ def build_digest(db: Session, day: date | None = None) -> str:
 
     leads = list(db.scalars(select(Lead)))
     m = compute_metrics(leads, utcnow())
-    new_yesterday = [l for l in leads if start <= l.created_at < end]
-    hot = [l for l in leads if is_hot(l)]
-    waiting = [l for l in leads if needs_reply(l)]
+    new_yesterday = [ld for ld in leads if start <= ld.created_at < end]
+    hot = [ld for ld in leads if is_hot(ld)]
+    waiting = [ld for ld in leads if needs_reply(ld)]
 
     messages = db.scalar(select(func.count()).select_from(Message)
                          .where(Message.role == "user", Message.created_at >= start, Message.created_at < end)) or 0
@@ -43,7 +43,7 @@ def build_digest(db: Session, day: date | None = None) -> str:
     run_count, cost, not_ok = int(runs[0] or 0), float(runs[1] or 0.0), int(runs[2] or 0)
 
     def names(rows):
-        return "; ".join(f"{l.name or format_phone(l.phone_norm)}" for l in rows[:5])
+        return "; ".join(f"{ld.name or format_phone(ld.phone_norm)}" for ld in rows[:5])
 
     lines = [f"LeadPilot — סיכום בוקר ל-{day.strftime('%d/%m/%Y')}",
              f"לידים חדשים אתמול: {len(new_yesterday)} · סה״כ {m['total']} · פעילים {m['active']}",

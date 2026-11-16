@@ -7,7 +7,7 @@ version is live so a later real migration tool has somewhere to start.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from sqlalchemy import (
@@ -30,7 +30,7 @@ SCHEMA_VERSION = 1
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc).replace(tzinfo=None)
+    return datetime.now(UTC).replace(tzinfo=None)
 
 
 class Base(DeclarativeBase):
@@ -57,7 +57,7 @@ class Conversation(Base):
     title: Mapped[str] = mapped_column(String(120), default="New chat")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
-    messages: Mapped[list["Message"]] = relationship(back_populates="conversation", order_by="Message.id")
+    messages: Mapped[list[Message]] = relationship(back_populates="conversation", order_by="Message.id")
 
 
 class Message(Base):

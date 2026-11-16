@@ -12,8 +12,19 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ..db import Lead, LeadEvent, Template, User, utcnow
-from ..leads_meta import (STAGE_BY_ID, STATUS_BY_ID, compute_metrics, format_phone, is_hot, is_paid, is_stale,
-                          lead_text, needs_reply, normalize_phone, stage_of)
+from ..leads_meta import (
+    STAGE_BY_ID,
+    STATUS_BY_ID,
+    compute_metrics,
+    format_phone,
+    is_hot,
+    is_paid,
+    is_stale,
+    lead_text,
+    needs_reply,
+    normalize_phone,
+    stage_of,
+)
 
 
 def _actor(db: Session, user_id: int | None) -> str:
@@ -56,7 +67,7 @@ def leads_payload(db: Session) -> list[dict]:
     for lead in leads:
         counts[lead.phone_norm] = counts.get(lead.phone_norm, 0) + 1
     now = utcnow()
-    return [lead_dict(l, now, duplicate=counts.get(l.phone_norm, 0) > 1) for l in leads]
+    return [lead_dict(ld, now, duplicate=counts.get(ld.phone_norm, 0) > 1) for ld in leads]
 
 
 # ---------------------------------------------------------------------------

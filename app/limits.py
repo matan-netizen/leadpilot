@@ -4,7 +4,7 @@ handled by the SDK's retries plus the backoff in agent.py.)
 """
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
@@ -20,9 +20,9 @@ def local_day_start_utc(now_utc: datetime | None = None) -> datetime:
     """Midnight today in the business timezone, expressed in naive UTC (how we store)."""
     tz = ZoneInfo(settings.timezone)
     now_utc = now_utc or utcnow()
-    local_now = now_utc.replace(tzinfo=timezone.utc).astimezone(tz)
+    local_now = now_utc.replace(tzinfo=UTC).astimezone(tz)
     local_midnight = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
-    return local_midnight.astimezone(timezone.utc).replace(tzinfo=None)
+    return local_midnight.astimezone(UTC).replace(tzinfo=None)
 
 
 def messages_last_hour(db: Session, user_id: int) -> int:

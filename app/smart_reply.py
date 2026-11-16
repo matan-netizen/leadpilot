@@ -15,15 +15,15 @@ from sqlalchemy.orm import Session
 
 from .config import ROOT, settings
 from .costs import cost_usd
+from .db import Lead, Run
 from .errors import explain as _explain
+from .leads_meta import STATUS_BY_ID, STATUSES, stage_of
+from .tools.leads import lead_dict, recommended_template
 
 
 def explain_code(exc: Exception) -> str:
     return _explain(exc).code
 
-from .db import Lead, Run
-from .leads_meta import STATUS_BY_ID, STATUSES, stage_of
-from .tools.leads import lead_dict, recommended_template
 
 PROMPT_PATH = ROOT / "app" / "prompts" / "smart_reply.md"
 

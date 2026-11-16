@@ -44,7 +44,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "get_lead",
-        "description": "Full card of one lead: all fields, next action, recommended WhatsApp template and the last 10 activity events. Call it before writing a reply for a specific lead.",
+        "description": ("Full card of one lead: all fields, next action, recommended WhatsApp template and the last 10 activity events. "
+                        "Call it before writing a reply for a specific lead."),
         "input_schema": {"type": "object", "properties": {"lead_id": {"type": "integer"}}, "required": ["lead_id"], "additionalProperties": False},
     },
     {
@@ -68,7 +69,8 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "create_lead",
-        "description": "Add a new lead. Phone is required; duplicates (same number in any format) are not created – the existing lead id is returned instead.",
+        "description": ("Add a new lead. Phone is required; duplicates (same number in any format) are not created – "
+                        "the existing lead id is returned instead."),
         "input_schema": {
             "type": "object",
             "properties": {

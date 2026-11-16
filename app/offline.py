@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Iterator
+from collections.abc import Iterator
 
 from .costs import Usage
 
@@ -60,9 +60,9 @@ def _fmt_leads(title: str, r: dict) -> str:
     if not r.get("count"):
         return f"**{title}:** אין 🎉"
     lines = [f"**{title} ({r['count']}):**"]
-    for l in r["leads"]:
-        flags = (" 🔥" if l["hot"] else "") + (" 💬" if l["needs_reply"] else "")
-        lines.append(f"- **{l['name'] or 'ללא שם'}**{flags} · {l['phone_display']} · {l['status_label']} – {l['next_action']}")
+    for ld in r["leads"]:
+        flags = (" 🔥" if ld["hot"] else "") + (" 💬" if ld["needs_reply"] else "")
+        lines.append(f"- **{ld['name'] or 'ללא שם'}**{flags} · {ld['phone_display']} · {ld['status_label']} – {ld['next_action']}")
     return "\n".join(lines)
 
 

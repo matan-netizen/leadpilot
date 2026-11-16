@@ -6,7 +6,7 @@ from app.offline import OfflineModelClient
 
 def _turn(text):
     with SessionLocal() as s:
-        user = s.query(User).filter_by(name="Dana").one()
+        user = s.query(User).filter_by(name="Tester").one()
         return list(run_turn(s, user=user, conversation=None, text=text, image=None, client=OfflineModelClient()))
 
 

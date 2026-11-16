@@ -12,7 +12,7 @@ def test_list_and_meta(client, logged_in):
     leads = client.get("/api/leads").json()["leads"]
     assert len(leads) >= 32
     assert {"phone_display", "stage", "hot", "stale", "needs_reply", "duplicate"} <= set(leads[0])
-    assert any(l["duplicate"] for l in leads)
+    assert any(ld["duplicate"] for ld in leads)
 
 
 def test_create_patch_and_duplicate(client, logged_in):
@@ -34,4 +34,4 @@ def test_overview_matches_list(client, logged_in):
     o = client.get("/api/overview").json()
     leads = client.get("/api/leads").json()["leads"]
     assert o["total"] == len(leads)
-    assert o["hot"] == sum(l["hot"] for l in leads)
+    assert o["hot"] == sum(ld["hot"] for ld in leads)
