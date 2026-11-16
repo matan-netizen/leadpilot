@@ -37,6 +37,7 @@ except ImportError:  # pragma: no cover
     anthropic = None  # type: ignore[assignment]
 
 MAX_TOOL_ROUNDS = 6
+UNAVAILABLE_RETRY_S = 300  # after a credit/key problem, try Claude again after 5 minutes
 SYSTEM_PATH = ROOT / "app" / "prompts" / "system.md"
 FALLBACK_MODELS = {"claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5", "claude-fable-5-1"}
 REFUSAL_TEXT = "לא אוכל לעזור בבקשה הזו. אם היא קשורה ללידים או למענה ללקוחות – נסו לנסח אותה אחרת."
@@ -101,8 +102,42 @@ class AnthropicModelClient:
         if anthropic is None:
             raise RuntimeError("the anthropic package is not installed")
         self.client = anthropic.Anthropic(api_key=settings.anthropic_api_key, max_retries=3, timeout=120)
+        self.unavailable_until = 0.0  # monotonic time; while in the future, turns are answered offline
+        self.unavailable_reason = ""
 
     def stream(self, *, system, messages, tools) -> Iterator[ModelEvent]:
+        """A real model turn; if the account cannot be used (no credit, bad key), answer with the rule engine."""
+        if self._degraded(messages):
+            yield from self._offline(system, messages, tools)
+            return
+        sent_any = False
+        try:
+            for ev in self._stream_api(system=system, messages=messages, tools=tools):
+                sent_any = True
+                yield ev
+        except Exception as exc:  # noqa: BLE001
+            reason = account_problem(exc)
+            if reason is None or sent_any:
+                raise
+            self.unavailable_until = time.monotonic() + UNAVAILABLE_RETRY_S
+            self.unavailable_reason = reason
+            yield ModelEvent(type="text", text=f"⚠️ {reason} – עונה בינתיים במצב כללים.\n\n")
+            yield from self._offline(system, messages, tools)
+
+    def _degraded(self, messages) -> bool:
+        if time.monotonic() < self.unavailable_until:
+            return True
+        # A tool round started offline must be finished offline (its tool ids are the rule engine's).
+        prev = messages[-2]["content"] if len(messages) >= 2 else None
+        return isinstance(prev, list) and any(isinstance(b, dict) and str(b.get("id", "")).startswith("off_") for b in prev)
+
+    @staticmethod
+    def _offline(system, messages, tools) -> Iterator[ModelEvent]:
+        from .offline import OfflineModelClient
+
+        yield from OfflineModelClient().stream(system=system, messages=messages, tools=tools)
+
+    def _stream_api(self, *, system, messages, tools) -> Iterator[ModelEvent]:
         kwargs: dict = {
             "model": settings.model,
             "max_tokens": settings.max_tokens,
@@ -212,7 +247,24 @@ def _summarise_result(result_text: str) -> str:
     return result_text[:90]
 
 
+def account_problem(exc: Exception) -> str | None:
+    """A Hebrew reason when the API account itself cannot be used (no credit, bad key), else None."""
+    if anthropic is None:
+        return None
+    msg = str(getattr(exc, "message", "") or exc).lower()
+    if isinstance(exc, anthropic.BadRequestError) and ("credit" in msg or "billing" in msg):
+        return "Claude לא זמין כרגע: אין קרדיט בחשבון ה-API (צריך להוסיף ב-Plans & Billing)"
+    if isinstance(exc, anthropic.AuthenticationError):
+        return "Claude לא זמין כרגע: מפתח ה-API לא תקין"
+    if isinstance(exc, getattr(anthropic, "PermissionDeniedError", ())):
+        return "Claude לא זמין כרגע: למפתח אין הרשאה"
+    return None
+
+
 def _friendly(exc: Exception) -> str:
+    problem = account_problem(exc)
+    if problem:
+        return problem + "."
     if anthropic is not None:
         if isinstance(exc, (anthropic.RateLimitError, getattr(anthropic, "OverloadedError", anthropic.RateLimitError))):
             return "המודל עמוס כרגע. נסו שוב בעוד דקה."
@@ -221,7 +273,7 @@ def _friendly(exc: Exception) -> str:
         if isinstance(exc, anthropic.APIConnectionError):
             return "אין חיבור למודל. בדקו את החיבור ונסו שוב."
         if isinstance(exc, anthropic.BadRequestError):
-            return f"הבקשה נדחתה: {exc.message if hasattr(exc, 'message') else exc}"
+            return "הבקשה נדחתה על ידי המודל. נסו לנסח אחרת."
     return "משהו השתבש אצלנו. השגיאה נרשמה – נסו שוב."
 
 

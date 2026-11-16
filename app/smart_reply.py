@@ -133,8 +133,11 @@ def generate(db: Session, lead: Lead, incoming: str, *, client, user_id: int | N
     except Exception as exc:  # noqa: BLE001 - fall back to the rules; the rep still gets a draft
         run.status = "error"
         run.error = f"{type(exc).__name__}: {exc}"[:2000]
+        from .agent import account_problem
+
         result = rules_reply(db, lead, incoming, tone)
-        result["warning"] = "המודל לא זמין כרגע – זו טיוטה מבוססת כללים."
+        problem = account_problem(exc)
+        result["warning"] = (problem + " – זו טיוטה מבוססת כללים.") if problem else "המודל לא זמין כרגע – זו טיוטה מבוססת כללים."
     run.duration_ms = int((time.monotonic() - started) * 1000)
     db.add(run)
     db.commit()
