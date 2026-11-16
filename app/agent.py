@@ -27,6 +27,7 @@ from sqlalchemy.orm import Session
 
 from .config import ROOT, settings
 from .costs import Usage, cost_usd
+from .errors import explain
 from .db import Conversation, Message, Run, User, utcnow
 from .tools import registry
 from .tools.leads import all_leads
@@ -104,6 +105,7 @@ class AnthropicModelClient:
         self.client = anthropic.Anthropic(api_key=settings.anthropic_api_key, max_retries=3, timeout=120)
         self.unavailable_until = 0.0  # monotonic time; while in the future, turns are answered offline
         self.unavailable_reason = ""
+        self.last_error = None
 
     def stream(self, *, system, messages, tools) -> Iterator[ModelEvent]:
         """A real model turn; if the account cannot be used (no credit, bad key), answer with the rule engine."""
@@ -116,13 +118,24 @@ class AnthropicModelClient:
                 sent_any = True
                 yield ev
         except Exception as exc:  # noqa: BLE001
-            reason = account_problem(exc)
-            if reason is None or sent_any:
+            info = explain(exc)
+            if sent_any or not (info.account or info.transient):
                 raise
-            self.unavailable_until = time.monotonic() + UNAVAILABLE_RETRY_S
-            self.unavailable_reason = reason
-            yield ModelEvent(type="text", text=f"⚠️ {reason} – עונה בינתיים במצב כללים.\n\n")
+            if info.account:  # the account is unusable: stop calling it for a while
+                self.unavailable_until = time.monotonic() + UNAVAILABLE_RETRY_S
+                self.unavailable_reason = info.short()
+                self.last_error = info
+            yield ModelEvent(type="text", text=f"> ⚠️ **{info.title}.** מקור: {info.source}. "
+                                               f"{'זו לא תקלה במערכת. ' if info.not_a_bug else ''}{info.action}\n\n"
+                                               "עונה בינתיים במצב כללים:\n\n")
             yield from self._offline(system, messages, tools)
+
+    def status(self) -> dict:
+        """For the UI badge: is Claude usable right now, and if not, why."""
+        if time.monotonic() < self.unavailable_until and self.last_error is not None:
+            e = self.last_error
+            return {"ok": False, "code": e.code, "title": e.title, "source": e.source, "action": e.action}
+        return {"ok": True}
 
     def _degraded(self, messages) -> bool:
         if time.monotonic() < self.unavailable_until:
@@ -248,33 +261,13 @@ def _summarise_result(result_text: str) -> str:
 
 
 def account_problem(exc: Exception) -> str | None:
-    """A Hebrew reason when the API account itself cannot be used (no credit, bad key), else None."""
-    if anthropic is None:
-        return None
-    msg = str(getattr(exc, "message", "") or exc).lower()
-    if isinstance(exc, anthropic.BadRequestError) and ("credit" in msg or "billing" in msg):
-        return "Claude לא זמין כרגע: אין קרדיט בחשבון ה-API (צריך להוסיף ב-Plans & Billing)"
-    if isinstance(exc, anthropic.AuthenticationError):
-        return "Claude לא זמין כרגע: מפתח ה-API לא תקין"
-    if isinstance(exc, getattr(anthropic, "PermissionDeniedError", ())):
-        return "Claude לא זמין כרגע: למפתח אין הרשאה"
-    return None
+    """The explanation when the API account itself is unusable (no credit, bad key, ...), else None."""
+    info = explain(exc)
+    return info.text() if info.account else None
 
 
 def _friendly(exc: Exception) -> str:
-    problem = account_problem(exc)
-    if problem:
-        return problem + "."
-    if anthropic is not None:
-        if isinstance(exc, (anthropic.RateLimitError, getattr(anthropic, "OverloadedError", anthropic.RateLimitError))):
-            return "המודל עמוס כרגע. נסו שוב בעוד דקה."
-        if isinstance(exc, anthropic.AuthenticationError):
-            return "מפתח ה-API לא תקין. בדקו את ANTHROPIC_API_KEY."
-        if isinstance(exc, anthropic.APIConnectionError):
-            return "אין חיבור למודל. בדקו את החיבור ונסו שוב."
-        if isinstance(exc, anthropic.BadRequestError):
-            return "הבקשה נדחתה על ידי המודל. נסו לנסח אחרת."
-    return "משהו השתבש אצלנו. השגיאה נרשמה – נסו שוב."
+    return explain(exc).text()
 
 
 def run_turn(db: Session, *, user: User, conversation: Conversation | None, text: str, image: dict | None,
@@ -393,5 +386,5 @@ def run_turn(db: Session, *, user: User, conversation: Conversation | None, text
         raise
     except Exception as exc:  # noqa: BLE001 - every failure becomes a run row and a visible message
         db.rollback()
-        finish_run("error", f"{type(exc).__name__}: {exc}"[:2000])
+        finish_run("error", f"[{explain(exc).code}] {type(exc).__name__}: {exc}"[:2000])
         yield {"type": "error", "message": _friendly(exc)}

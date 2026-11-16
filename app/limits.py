@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .db import Message, Run, utcnow
+from .errors import daily_cap_text, rate_limit_text
 
 
 def local_day_start_utc(now_utc: datetime | None = None) -> datetime:
@@ -37,13 +38,13 @@ def spend_today_usd(db: Session) -> float:
 def check_rate_limit(db: Session, user_id: int) -> None:
     used = messages_last_hour(db, user_id)
     if used >= settings.rate_limit_per_hour:
-        raise HTTPException(429, f"שלחת {used} הודעות בשעה האחרונה; המגבלה היא {settings.rate_limit_per_hour}. נסו שוב מאוחר יותר.")
+        raise HTTPException(429, rate_limit_text(used, settings.rate_limit_per_hour))
 
 
 def check_daily_cap(db: Session) -> None:
     spent = spend_today_usd(db)
     if spent >= settings.daily_cap_usd:
-        raise HTTPException(402, f"התקציב היומי (${settings.daily_cap_usd:.2f}) נוצל. נחזור מחר.")
+        raise HTTPException(402, daily_cap_text(settings.daily_cap_usd))
 
 
 def check_upload_size(data_b64: str | None) -> None:

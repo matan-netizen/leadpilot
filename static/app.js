@@ -183,7 +183,10 @@
     { id: 'templates', label: 'תבניות וואטסאפ', icon: 'template' },
   ];
   function renderHeader() {
-    const ai = S.meta.ai === 'anthropic'
+    const st = S.meta.ai_status || { ok: true };
+    const ai = S.meta.ai === 'anthropic' && !st.ok
+      ? `<span class="pill off" title="${esc(st.action || '')}">${ic('alert')} Claude לא זמין: ${esc(st.title)} (${esc(st.source)}) – לא תקלה במערכת</span>`
+      : S.meta.ai === 'anthropic'
       ? `<span class="pill ai">${ic('sparkles')} מענה חכם: Claude</span>`
       : `<span class="pill off" title="הגדירו ANTHROPIC_API_KEY כדי להפעיל את Claude">${ic('sparkles')} מענה חכם: מצב כללים (אופליין)</span>`;
     $('subline').innerHTML = `${ic('database')}<span>${esc(S.meta.business)}</span>${ai}${S.syncedAt ? `<span>· עודכן ${S.syncedAt.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' })}</span>` : ''}<span>· ${esc(S.user.name)}</span>`;
@@ -354,6 +357,7 @@
     try {
       const r = await api(`/api/leads/${id}/smart-reply`, { method: 'POST', body: JSON.stringify({ incoming, tone: S.tone }) });
       S.drafts[id] = { ...r, incoming, loading: false };
+      if (r.warning) refreshAiStatus();
       if (incoming && incoming.trim() !== (lead.last_incoming || '').trim()) { lead.last_incoming = incoming.trim(); lead.needs_reply = true; renderTabs(); }
     } catch (err) { S.drafts[id] = { ...S.drafts[id], loading: false, error: err.message }; }
     rerenderSR(id);
@@ -617,15 +621,20 @@
             const c = document.createElement('span'); c.className = `chip tool ${ev.status}`; c.textContent = `${ev.status === 'start' ? '⚙' : '✓'} ${ev.name}${ev.status === 'done' && ev.summary ? ': ' + ev.summary : ''}`; meta.appendChild(c);
             $('chat-status').textContent = `משתמש ב-${ev.name}…`;
           } else if (ev.type === 'done') { const u = ev.usage || {}; if (u.input_tokens) { const c = document.createElement('span'); c.className = 'chip'; c.textContent = `${u.input_tokens} in · ${u.output_tokens} out · $${(ev.cost_usd || 0).toFixed(4)}`; meta.appendChild(c); } }
-          else if (ev.type === 'error') { full += `\n\n**שגיאה:** ${ev.message}`; body.innerHTML = renderMd(full); }
+          else if (ev.type === 'error') { full += `\n\n> ⚠️ ${ev.message}`; body.innerHTML = renderMd(full); }
         }
       }
-    } catch (err) { full += `\n\n**שגיאה:** ${err.message}`; body.innerHTML = renderMd(full); }
+    } catch (err) { full += `\n\n> ⚠️ ${err.message}`; body.innerHTML = renderMd(full); }
     finally {
       body.classList.remove('cursor'); S.chat.streaming = false; $('send').disabled = false; $('chat-status').textContent = '';
       try { S.chat.conversations = await api('/api/conversations'); renderConvs(); } catch (_) {}
       if (wrote) { const data = await api('/api/leads').catch(() => null); if (data) { S.leads = data.leads; renderTabs(); } }
+      refreshAiStatus();
     }
+  }
+
+  async function refreshAiStatus() {
+    try { const m = await api('/api/meta'); S.meta.ai_status = m.ai_status; renderHeader(); } catch (_) {}
   }
 
   // ---------- boot ----------

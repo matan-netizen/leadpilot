@@ -213,8 +213,10 @@ def _lead_or_404(db: Session, lead_id: int) -> Lead:
 @app.get("/api/meta")
 def get_meta(request: Request, db: Session = Depends(get_db)):
     auth.current_user(request, db)
-    return {**meta(), "business": settings.business_name, "ai": request.app.state.model_client.name,
-            "model": settings.model if request.app.state.model_client.name == "anthropic" else None}
+    client = request.app.state.model_client
+    status = client.status() if hasattr(client, "status") else {"ok": True}
+    return {**meta(), "business": settings.business_name, "ai": client.name, "ai_status": status,
+            "model": settings.model if client.name == "anthropic" else None}
 
 
 @app.get("/api/leads")

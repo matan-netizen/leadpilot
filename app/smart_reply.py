@@ -15,6 +15,12 @@ from sqlalchemy.orm import Session
 
 from .config import ROOT, settings
 from .costs import cost_usd
+from .errors import explain as _explain
+
+
+def explain_code(exc: Exception) -> str:
+    return _explain(exc).code
+
 from .db import Lead, Run
 from .leads_meta import STATUS_BY_ID, STATUSES, stage_of
 from .tools.leads import lead_dict, recommended_template
@@ -132,12 +138,13 @@ def generate(db: Session, lead: Lead, incoming: str, *, client, user_id: int | N
         result["engine"] = "ai"
     except Exception as exc:  # noqa: BLE001 - fall back to the rules; the rep still gets a draft
         run.status = "error"
-        run.error = f"{type(exc).__name__}: {exc}"[:2000]
-        from .agent import account_problem
+        run.error = f"[{explain_code(exc)}] {type(exc).__name__}: {exc}"[:2000]
+        from .errors import explain
 
+        info = explain(exc)
         result = rules_reply(db, lead, incoming, tone)
-        problem = account_problem(exc)
-        result["warning"] = (problem + " – זו טיוטה מבוססת כללים.") if problem else "המודל לא זמין כרגע – זו טיוטה מבוססת כללים."
+        result["warning"] = info.text() + " הטיוטה כאן נוצרה במצב כללים."
+        result["error_code"] = info.code
     run.duration_ms = int((time.monotonic() - started) * 1000)
     db.add(run)
     db.commit()
