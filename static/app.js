@@ -61,10 +61,14 @@
 
   async function api(path, options = {}) {
     const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, credentials: 'same-origin', ...options });
-    if (res.status === 401) { showLogin(); throw new Error('יש להתחבר.'); }
+    // A 401 on the login call itself means wrong credentials: show the server's message, don't bounce to login.
+    const isLogin = path === '/api/login';
+    if (res.status === 401 && !isLogin) { showLogin(); throw new Error('יש להתחבר.'); }
     if (!res.ok) {
       let detail = res.statusText;
       try { const j = await res.json(); detail = typeof j.detail === 'string' ? j.detail : (j.detail?.[0]?.msg || JSON.stringify(j.detail)); } catch (_) {}
+      if (res.status === 422) detail = isLogin ? 'שם: 2–40 תווים, וסיסמה לא ריקה.' : 'חלק מהשדות לא תקינים.';
+      if (isLogin && res.status === 401) detail = detail || 'סיסמה שגויה.';
       throw new Error(detail);
     }
     return res.status === 204 ? null : res.json();
